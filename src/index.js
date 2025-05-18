@@ -2,11 +2,22 @@ const express = require("express");
 const { sql, poolPromise } = require("./db");
 const bcrypt = require("bcrypt");
 
+const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const SECRET = "Tai31072002@";
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
+
+
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'exp://127.0.0.1:19000',
+    'https://duanrac-reactnative.azurewebsites.net'
+  ],
+  credentials: true
+}));
 
 app.use(express.json());
 
@@ -186,9 +197,21 @@ app.post("/login", async (req, res) => {
 app.post("/user", async (req, res) => {
   const { username, password, fullName, phone, role, createdBy } = req.body;
   try {
+    const pool = await poolPromise;
+
+    // ✅ Kiểm tra username đã tồn tại chưa
+    const check = await pool.request()
+      .input("username", sql.NVarChar, username)
+      .query("SELECT * FROM Users WHERE username = @username");
+
+    if (check.recordset.length > 0) {
+      return res.status(400).send("❌ Username đã tồn tại");
+    }
+
+    // ✅ Nếu chưa có thì hash mật khẩu và thêm user
     const hash = await bcrypt.hash(password, 10);
     const now = new Date();
-    const pool = await poolPromise;
+
     await pool.request()
       .input("username", sql.NVarChar, username)
       .input("passwordHash", sql.NVarChar, hash)
@@ -202,12 +225,14 @@ app.post("/user", async (req, res) => {
         INSERT INTO Users (username, passwordHash, fullName, phone, role, isActive, createdBy, createdAt)
         VALUES (@username, @passwordHash, @fullName, @phone, @role, @isActive, @createdBy, @createdAt)
       `);
+
     res.send("✅ Đã thêm tài khoản");
   } catch (err) {
     console.log(err);
     res.status(500).send("❌ Lỗi tạo tài khoản");
   }
 });
+
 
 app.put("/user/deactivate/:id", async (req, res) => {
   try {
