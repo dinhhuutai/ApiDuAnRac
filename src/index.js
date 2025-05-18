@@ -85,6 +85,31 @@ app.get("/history", async (req, res) => {
   }
 });
 
+
+app.get("/history/date", async (req, res) => {
+  const { date } = req.query;
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input("date", sql.DateTime, new Date(date))
+      .query(`
+        SELECT 
+          U.fullName, D.departmentName, UN.unitName, T.trashName, B.trashBinCode, W.weighingTime, W.weightKg
+        FROM TrashWeighings W
+        JOIN TrashBins B ON W.trashBinCode = B.trashBinCode
+        JOIN Departments D ON B.departmentID = D.departmentID
+        LEFT JOIN Units UN ON B.unitID = UN.unitID
+        JOIN TrashTypes T ON B.trashTypeID = T.trashTypeID
+        WHERE CAST(W.weighingTime AS DATE) = CAST(@date AS DATE)
+        ORDER BY W.weighingTime DESC
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.log(err);
+    res.status(500).send("❌ Lỗi khi truy vấn dữ liệu");
+  }
+});
+
 app.get("/user/:id", async (req, res) => {
   try {
     const pool = await poolPromise;
