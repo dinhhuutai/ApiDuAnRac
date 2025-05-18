@@ -59,7 +59,6 @@ app.post("/trash-weighings", async (req, res) => {
   }
 });
 
-
 app.get("/history/date", async (req, res) => {
   const { date } = req.query;
   try {
@@ -67,8 +66,16 @@ app.get("/history/date", async (req, res) => {
     const result = await pool.request()
       .input("date", sql.DateTime, new Date(date))
       .query(`
-        SELECT D.departmentName, UN.unitName, T.trashName, B.trashBinCode, W.weighingTime, W.weightKg
+        SELECT 
+          U.fullName,
+          D.departmentName, 
+          UN.unitName, 
+          T.trashName, 
+          B.trashBinCode, 
+          W.weighingTime, 
+          W.weightKg
         FROM TrashWeighings W
+        JOIN Users U ON W.userID = U.userID        -- Thêm join với bảng Users để lấy tên người cân
         JOIN TrashBins B ON W.trashBinCode = B.trashBinCode
         JOIN Departments D ON B.departmentID = D.departmentID
         LEFT JOIN Units UN ON B.unitID = UN.unitID
