@@ -8,7 +8,7 @@ const jwt = require("jsonwebtoken");
 const SECRET = "Tai31072002@";
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
 
 app.use(cors({
@@ -25,7 +25,10 @@ app.use(express.json());
 app.get("/users/get", async (req, res) => {
   try {
     const pool = await poolPromise;
-    const result = await pool.request().query("SELECT * FROM [Users]");
+    const result = await pool.request().query(`
+      SELECT userID, username, fullName, phone, role, isActive, createdAt, updatedAt 
+      FROM [Users]
+    `);
     res.json(result.recordset);
   } catch (err) {
     console.error("❌ Lỗi khi truy vấn:", err);
@@ -34,7 +37,7 @@ app.get("/users/get", async (req, res) => {
 });
 
 app.post("/trash-weighings", async (req, res) => {
-  const { trashBinCode, userID, weighingTime, weightKg, updatedAt, updatedBy } = req.body;
+  const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate } = req.body;
   try {
     const pool = await poolPromise;
     await pool.request()
@@ -42,11 +45,13 @@ app.post("/trash-weighings", async (req, res) => {
       .input("userID", sql.Int, userID)
       .input("weighingTime", sql.DateTime, weighingTime)
       .input("weightKg", sql.Float, weightKg)
+      .input("workShift", sql.NVarChar, workShift)
       .input("updatedAt", sql.DateTime, updatedAt)
       .input("updatedBy", sql.Int, updatedBy)
+      .input("workDate", sql.Date, workDate)
       .query(`
-        INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, updatedAt, updatedBy)
-        VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @updatedAt, @updatedBy)
+        INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate)
+        VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @workShift, @updatedAt, @updatedBy, @workDate)
       `);
     res.send("✅ Đã thêm bản ghi cân rác");
   } catch (err) {
