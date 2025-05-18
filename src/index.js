@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require("express");
 const { sql, poolPromise } = require("./db");
 const bcrypt = require("bcrypt");

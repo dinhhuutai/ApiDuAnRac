@@ -68,6 +68,5 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'duanrac-api-node'
-          slot-name: 'Production'
           package: .
           
