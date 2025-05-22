@@ -10,6 +10,7 @@ const SECRET = "Tai31072002@";
 const app = express();
 const port = process.env.PORT || 5000;
 
+app.use(express.json());
 
 app.use(cors({
   origin: [
@@ -20,7 +21,6 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
 
 app.get("/users/get", async (req, res) => {
   try {
@@ -38,6 +38,7 @@ app.get("/users/get", async (req, res) => {
 
 app.post("/trash-weighings", async (req, res) => {
   const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate } = req.body;
+  
   try {
     const pool = await poolPromise;
     await pool.request()
@@ -55,6 +56,7 @@ app.post("/trash-weighings", async (req, res) => {
       `);
     res.send("✅ Đã thêm bản ghi cân rác");
   } catch (err) {
+    console.log(err)
     res.status(500).send("❌ Lỗi khi thêm dữ liệu");
   }
 });
@@ -66,13 +68,13 @@ app.get("/history/date", async (req, res) => {
     const result = await pool.request()
       .input("date", sql.DateTime, new Date(date))
       .query(`
-        SELECT 
+        SELECT
           U.fullName,
-          D.departmentName, 
-          UN.unitName, 
-          T.trashName, 
-          B.trashBinCode, 
-          W.weighingTime, 
+          D.departmentName,
+          UN.unitName,
+          T.trashName,
+          B.trashBinCode,
+          W.weighingTime,
           W.weightKg
         FROM TrashWeighings W
         JOIN Users U ON W.userID = U.userID        -- Thêm join với bảng Users để lấy tên người cân
@@ -281,6 +283,216 @@ app.put("/user/deactivate/:id", async (req, res) => {
     res.send("✅ Tài khoản đã bị ngừng hoạt động");
   } catch (err) {
     res.status(500).send("❌ Lỗi khi ngừng tài khoản");
+  }
+});
+
+function getTodayISO() {
+  const now = new Date();
+  now.setHours(now.getHours() + 7); // Giờ Việt Nam
+  return now.toISOString().split("T")[0];
+}
+
+app.get('/api/statistics/today', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const today = getTodayISO();
+
+    console.log('today: ', today);
+
+    const result = await pool.request()
+      .input('today', sql.Date, today)
+      .query(`
+        -- Tổng lượt cân hôm nay
+        SELECT 
+          (SELECT COUNT(*) FROM TrashWeighings WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today) AS totalWeighings,
+
+        -- Tổng khối lượng rác hôm nay
+          (SELECT SUM(weightKg) FROM TrashWeighings WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today) AS totalWeight,
+
+        -- Bộ phận có nhiều rác nhất hôm nay
+          (SELECT TOP 1 d.departmentName
+           FROM TrashWeighings tw
+           JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+           JOIN Departments d ON tb.departmentID = d.departmentID
+           WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+           GROUP BY d.departmentName
+           ORDER BY SUM(tw.weightKg) DESC) AS mostActiveDepartment,
+
+        -- Loại rác nhiều nhất hôm nay
+          (SELECT TOP 1 tt.trashName
+           FROM TrashWeighings tw
+           JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+           JOIN TrashTypes tt ON tb.trashTypeID = tt.trashTypeID
+           WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+           GROUP BY tt.trashName
+           ORDER BY SUM(tw.weightKg) DESC) AS mostCommonTrashType,
+
+        -- Tổng tài khoản
+          (SELECT COUNT(*) FROM Users) AS totalAccounts
+      `);
+      
+    res.json({status: 'success', data: result.recordset[0]});
+  } catch (err) {
+    console.log('Error in /statistics/today:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+app.get('/api/statistics/weight-by-department', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    // Lấy ngày hôm nay theo giờ Việt Nam
+    const now = new Date();
+    now.setHours(now.getHours() + 7);
+    const today = now.toISOString().split('T')[0];
+
+    const result = await pool.request()
+      .input('today', sql.Date, today)
+      .query(`
+        SELECT 
+          d.departmentName AS name,
+          ROUND(SUM(tw.weightKg), 2) AS weight
+        FROM TrashWeighings tw
+        JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+        JOIN Departments d ON tb.departmentID = d.departmentID
+        WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+        GROUP BY d.departmentName
+        ORDER BY weight DESC
+      `);
+
+    res.json({ status: 'success', data: result.recordset });
+  } catch (err) {
+    console.log('Error in /statistics/weight-by-department:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+app.get('/api/statistics/today-percentage', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const today = getTodayISO();
+
+    const result = await pool.request()
+      .input('today', sql.Date, today)
+      .query(`
+        WITH TotalToday AS (
+          SELECT SUM(weightKg) AS total
+          FROM TrashWeighings
+          WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+        )
+        SELECT 
+          tt.trashName AS name,
+          SUM(tw.weightKg) AS value,
+          CAST(SUM(tw.weightKg) * 100.0 / ttoday.total AS DECIMAL(5,2)) AS percentage
+        FROM TrashWeighings tw
+        JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+        JOIN TrashTypes tt ON tb.trashTypeID = tt.trashTypeID
+        CROSS JOIN TotalToday ttoday
+        WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+        GROUP BY tt.trashName, ttoday.total
+        ORDER BY percentage DESC
+      `);
+
+    res.json({status: 'success', data: result.recordset});
+  } catch (err) {
+    console.log('Error in /statistics/today-percentage:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+const TRASH_NAMES = [
+    'Giẻ lau có chứa thành phần nguy hại',
+    'Băng keo dính mực',
+    'Keo bàn thải',
+    'Mực in thải',
+    'Vụn logo',
+    'Lụa căng khung',
+    'Rác sinh hoạt'
+];
+const SHIFTS = ['ca1', 'ca2', 'ca3'];
+
+app.get('/api/statistics/weight-by-unit', async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    console.log({ startDate, endDate })
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+
+    const pool = await poolPromise;
+    const result = await pool.request() // ✅ Đúng
+    .input('startDate', sql.Date, startDate)
+    .input('endDate', sql.Date, endDate)
+    .query(`
+      SELECT 
+          d.departmentName AS department,
+          u.unitName AS unit,
+          tt.trashName,
+          tw.workShift,
+          SUM(tw.weightKg) AS totalWeight
+      FROM TrashWeighings tw
+      JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+      JOIN TrashTypes tt ON tb.trashTypeID = tt.trashTypeID
+      JOIN Departments d ON tb.departmentID = d.departmentID
+      LEFT JOIN Units u ON tb.unitID = u.unitID
+      WHERE tw.workDate BETWEEN @startDate AND @endDate
+      GROUP BY 
+          d.departmentName,
+          u.unitName,
+          tt.trashName,
+          tw.workShift
+    `);
+
+    const rows = result.recordset;
+
+    // Nhóm dữ liệu theo bộ phận + đơn vị
+    const grouped = {};
+
+    for (const row of rows) {
+      const key = `${row.department}||${row.unit}`;
+      if (!grouped[key]) {
+        grouped[key] = {
+          d: row.department,
+          u: row.unit,
+          weights: {}
+        };
+      }
+      const subKey = `${row.trashName}__${row.workShift}`;
+      grouped[key].weights[subKey] = row.totalWeight;
+    }
+
+    // Chuẩn hóa kết quả
+    const finalResult = [];
+
+    for (const key in grouped) {
+      const item = grouped[key];
+      const values = [];
+
+      for (const trashName of TRASH_NAMES) {
+        for (const shift of SHIFTS) {
+          const w = item.weights[`${trashName}__${shift}`];
+          values.push(w ? Math.round(w * 100) / 100 : 0);
+        }
+      }
+
+      const total = values.reduce((acc, cur) => acc + cur, 0);
+      finalResult.push({
+        d: item.d,
+        u: item.u,
+        value: [...values, Math.round(total * 100) / 100]
+      });
+    }
+
+    res.json({ status: 'success', data: finalResult });
+
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
