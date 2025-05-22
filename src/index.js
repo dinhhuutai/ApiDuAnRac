@@ -297,8 +297,6 @@ app.get('/api/statistics/today', async (req, res) => {
     const pool = await poolPromise;
     const today = getTodayISO();
 
-    console.log('today: ', today);
-
     const result = await pool.request()
       .input('today', sql.Date, today)
       .query(`
@@ -417,8 +415,6 @@ const SHIFTS = ['ca1', 'ca2', 'ca3'];
 app.get('/api/statistics/weight-by-unit', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-
-    console.log({ startDate, endDate })
 
     if (!startDate || !endDate) {
       return res.status(400).json({ error: 'startDate and endDate are required' });
