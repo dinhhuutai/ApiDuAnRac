@@ -14,9 +14,7 @@ app.use(express.json());
 
 app.use(cors({
   origin: [
-    'http://localhost:3000',
-    'exp://127.0.0.1:19000',
-    'https://duanrac-reactnative.azurewebsites.net'
+    'https://ashy-mud-0ac3ad21e.6.azurestaticapps.net'
   ],
   credentials: true
 }));
