@@ -14,7 +14,8 @@ app.use(express.json());
 
 app.use(cors({
   origin: [
-    'https://ashy-mud-0ac3ad21e.6.azurestaticapps.net'
+    'https://ashy-mud-0ac3ad21e.6.azurestaticapps.net',
+    'http://localhost:3000',
   ],
   credentials: true
 }));
@@ -36,7 +37,7 @@ app.get("/users/get", async (req, res) => {
 
 app.post("/trash-weighings", async (req, res) => {
   const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate } = req.body;
-  
+
   try {
     const pool = await poolPromise;
     await pool.request()
