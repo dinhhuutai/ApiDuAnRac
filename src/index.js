@@ -409,7 +409,7 @@ const TRASH_NAMES = [
     'Lụa căng khung',
     'Rác sinh hoạt'
 ];
-const SHIFTS = ['ca1', 'ca2', 'ca3'];
+const SHIFTS = ['ca1', 'ca2', 'ca3', 'dai1', 'dai2'];
 
 app.get('/api/statistics/weight-by-unit', async (req, res) => {
   try {
