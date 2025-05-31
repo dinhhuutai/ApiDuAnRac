@@ -62,6 +62,7 @@ app.post("/trash-weighings", async (req, res) => {
 
 app.get("/history/date", async (req, res) => {
   const { date } = req.query;
+  console.log(date);
   try {
     const pool = await poolPromise;
     const result = await pool.request()
@@ -75,7 +76,7 @@ app.get("/history/date", async (req, res) => {
           B.trashBinCode,
           W.weighingTime,
           W.weightKg,
-          W.workDate,
+          W.workDate
         FROM TrashWeighings W
         JOIN Users U ON W.userID = U.userID        -- Thêm join với bảng Users để lấy tên người cân
         JOIN TrashBins B ON W.trashBinCode = B.trashBinCode
@@ -85,6 +86,8 @@ app.get("/history/date", async (req, res) => {
         WHERE CAST(W.weighingTime AS DATE) = CAST(@date AS DATE)
         ORDER BY W.weighingTime DESC
       `);
+
+      console.log(result.recordset)
     res.json(result.recordset);
   } catch (err) {
     console.log(err);
