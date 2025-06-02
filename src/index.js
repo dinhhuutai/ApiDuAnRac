@@ -78,6 +78,7 @@ app.get("/history/date", async (req, res) => {
           W.weighingTime,
           W.weightKg,
           W.workDate,
+          W.workShift,
           W.userName
         FROM TrashWeighings W
         JOIN Users U ON W.userID = U.userID        -- Thêm join với bảng Users để lấy tên người cân
