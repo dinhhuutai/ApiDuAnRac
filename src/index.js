@@ -36,7 +36,7 @@ app.get("/users/get", async (req, res) => {
 });
 
 app.post("/trash-weighings", async (req, res) => {
-  const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate } = req.body;
+  const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName } = req.body;
 
   try {
     const pool = await poolPromise;
@@ -49,9 +49,10 @@ app.post("/trash-weighings", async (req, res) => {
       .input("updatedAt", sql.DateTime, updatedAt)
       .input("updatedBy", sql.Int, updatedBy)
       .input("workDate", sql.Date, workDate)
+      .input("userName", sql.NVarChar, userName)
       .query(`
-        INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate)
-        VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @workShift, @updatedAt, @updatedBy, @workDate)
+        INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName)
+        VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @workShift, @updatedAt, @updatedBy, @workDate, @userName)
       `);
     res.send("✅ Đã thêm bản ghi cân rác");
   } catch (err) {
@@ -492,6 +493,73 @@ app.get('/api/statistics/weight-by-unit', async (req, res) => {
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+app.get('/api/teammember/users', async (req, res) => {
+  const role = req.query.role; // ✅ Lấy từ query string
+
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('role', sql.NVarChar, role)
+      .query(`SELECT userID, fullName FROM Users WHERE role = @role AND isActive = 1`);
+      
+    res.json(result.recordset);
+  } catch (err) {
+    console.error("Query failed:", err); // Ghi rõ lỗi để debug
+    res.status(500).send(err.message);
+  }
+});
+
+// GET /api/team-members?userID=5
+app.get('/api/team-members', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const userID = req.query.userID;
+    const result = await pool.request()
+      .input('userID', sql.Int, userID)
+      .query(`
+        SELECT tm.teamMemberID, tm.name
+        FROM TeamMembers tm
+        INNER JOIN Users u ON tm.userID = u.userID
+        WHERE u.role = 'user' AND tm.userID = @userID
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+// POST /api/team-members
+app.post('/api/team-members', async (req, res) => {
+  const { name, userID } = req.body;
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('name', sql.NVarChar, name)
+      .input('userID', sql.Int, userID)
+      .query(`INSERT INTO TeamMembers (name, userID) VALUES (@name, @userID)`);
+    res.status(201).send('Team member created successfully');
+  } catch (err) {
+    console.error('Error inserting team member:', err);
+    res.status(500).send(err.message);
+  }
+});
+
+// DELETE /api/team-members/:id
+app.delete('/api/team-members/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+    await pool.request()
+      .input('id', sql.Int, id)
+      .query(`DELETE FROM TeamMembers WHERE teamMemberID = @id`);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Delete error:', err);
+    res.status(500).send(err.message);
   }
 });
 
