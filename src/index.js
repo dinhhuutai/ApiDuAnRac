@@ -35,6 +35,37 @@ app.get("/users/get", async (req, res) => {
   }
 });
 
+app.delete('/users/delete/:id', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    await pool.request()
+      .input('id', req.params.id)
+      .query('DELETE FROM [Users] WHERE userID = @id');
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('❌ Lỗi khi xóa:', err);
+    res.status(500).send('Lỗi server');
+  }
+});
+app.delete('/history/delete/:id', async (req, res) => {
+  const { id } = req.params;
+console.log('id: ', id);
+  try {
+    const pool = await poolPromise;
+
+    await pool
+      .request()
+      .input('id', sql.Int, id) // <-- Gán giá trị id an toàn
+      .query('DELETE FROM [TrashWeighings] WHERE weighingID = @id'); // <-- Dùng @id
+
+    res.status(200).json({ message: 'Xóa thành công' });
+  } catch (error) {
+    console.error('❌ Lỗi khi xóa dữ liệu lịch sử cân:', error);
+    res.status(500).json({ message: 'Lỗi khi xóa dữ liệu lịch sử cân' });
+  }
+});
+
+
 app.post("/trash-weighings", async (req, res) => {
   const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName } = req.body;
 
@@ -63,7 +94,7 @@ app.post("/trash-weighings", async (req, res) => {
 
 app.get("/history/date", async (req, res) => {
   const { date } = req.query;
-  console.log(date);
+
   try {
     const pool = await poolPromise;
     const result = await pool.request()
@@ -75,6 +106,7 @@ app.get("/history/date", async (req, res) => {
           UN.unitName,
           T.trashName,
           B.trashBinCode,
+          W.weighingID,
           W.weighingTime,
           W.weightKg,
           W.workDate,
