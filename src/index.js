@@ -143,7 +143,7 @@ app.put("/trash-weighings/:id", async (req, res) => {
       .input("workDate", sql.Date, workDate)
       .input("userName", sql.NVarChar, userName)
       .input("updatedAt", sql.DateTime, updatedAt)
-      .input("updatedBy", sql.Int, id)
+      .input("updatedBy", sql.Int, updatedBy)
       .query(`
         UPDATE TrashWeighings
         SET
