@@ -64,7 +64,7 @@ console.log('id: ', id);
     res.status(500).json({ message: 'Lỗi khi xóa dữ liệu lịch sử cân' });
   }
 });
-// Ánh xạ tổ - đơn vị
+
 const teamUnitMap = {
   'Điều hành': [],
   'Chất lượng': [],
@@ -107,25 +107,22 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
 
     const scannedUnits = scannedResult.recordset.map(r => r.trashBinCode);
 
-    const unscannedTeams = [];
-
+    const result = [];
     for (const [team, units] of Object.entries(teamUnitMap)) {
       if (units.length === 0) continue;
 
-      const hasAnyScanned = units.some(unit => scannedUnits.includes(unit));
-      if (!hasAnyScanned) {
-        unscannedTeams.push(team);
+      const isScanned = units.some(unit => scannedUnits.includes(unit));
+      if (!isScanned) {
+        result.push(team);
       }
     }
 
-    res.json({ unscannedTeams });
+    res.json({ unscannedTeams: result });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error fetching unscanned teams' });
   }
 });
-
-
 
 
 // GET /trash-weighings/check?trashBinCode=XXX&workShift=YYY&workDate=ZZZ
