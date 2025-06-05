@@ -172,7 +172,7 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
       GROUP BY d.departmentName, u.unitName
     `);
 
-    const lastWeighedMap = new Map(); // key: `${team}_${unit}` => date
+    const lastWeighedMap = new Map();
 
     for (const row of result.recordset) {
       const key = `${row.team?.trim()}_${row.unit?.trim()}`;
