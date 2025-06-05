@@ -98,29 +98,50 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
   try {
     const pool = await poolPromise;
 
+    // Lấy danh sách trashBin đã quét cùng departmentName + unitName
     const scannedResult = await pool.request()
       .input('workDate', sql.Date, workDate)
       .input('workShift', sql.NVarChar, workShift)
       .query(`
-        SELECT DISTINCT trashBinCode FROM TrashWeighings
-        WHERE workDate = @workDate AND workShift = @workShift
+        SELECT DISTINCT 
+          tb.trashBinCode,
+          d.departmentName,
+          u.unitName
+        FROM TrashWeighings tw
+        JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+        JOIN Departments d ON tb.departmentID = d.departmentID
+        LEFT JOIN Units u ON tb.unitID = u.unitID
+        WHERE tw.workDate = @workDate AND tw.workShift = @workShift
       `);
 
-    const scannedUnits = scannedResult.recordset.map(r => r.trashBinCode.trim());
+    // Tạo map danh sách bộ phận và đơn vị đã quét
+    const scannedMap = new Map(); // departmentName => Set(unitName)
+    for (const row of scannedResult.recordset) {
+      const dept = row.departmentName?.trim();
+      const unit = row.unitName?.trim();
+
+      if (!scannedMap.has(dept)) {
+        scannedMap.set(dept, new Set());
+      }
+
+      if (unit) {
+        scannedMap.get(dept).add(unit);
+      }
+    }
 
     const unscannedTeams = {};
 
     for (const [team, units] of Object.entries(teamUnitMap)) {
-      // Nếu không có đơn vị con
-      if (!units || units.length === 0) {
-        // Nếu bộ phận không xuất hiện trong danh sách quét thì coi là chưa quét
-        const teamScanned = scannedUnits.some(unit => unit.toLowerCase().includes(team.toLowerCase()));
-        if (!teamScanned) {
+      const scannedUnits = scannedMap.get(team) || new Set();
+
+      if (units.length === 0) {
+        // Bộ phận không có đơn vị con, kiểm tra đã quét chưa
+        if (!scannedMap.has(team)) {
           unscannedTeams[team] = [];
         }
       } else {
-        // Có đơn vị con
-        const unscanned = units.filter(unit => !scannedUnits.includes(unit));
+        // Bộ phận có đơn vị con, kiểm tra đơn vị nào chưa quét
+        const unscanned = units.filter(unit => !scannedUnits.has(unit));
         if (unscanned.length > 0) {
           unscannedTeams[team] = unscanned;
         }
@@ -133,6 +154,7 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
     return res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
   }
 });
+
 
 // GET /trash-weighings/check?trashBinCode=XXX&workShift=YYY&workDate=ZZZ
 
