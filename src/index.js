@@ -83,14 +83,88 @@ app.post("/trash-weighings", async (req, res) => {
       .input("userName", sql.NVarChar, userName)
       .query(`
         INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName)
+        OUTPUT INSERTED.id
         VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @workShift, @updatedAt, @updatedBy, @workDate, @userName)
       `);
-    res.send("✅ Đã thêm bản ghi cân rác");
+
+    
+    const insertedId = result.recordset[0].id;
+
+
+    res.status(200).json({
+      message: "✅ Đã thêm bản ghi cân rác",
+      id: insertedId,
+    });
   } catch (err) {
     console.log(err)
     res.status(500).send("❌ Lỗi khi thêm dữ liệu");
   }
 });
+
+app.get("/trash-weighings/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input("id", sql.Int, id)
+      .query("SELECT * FROM TrashWeighings WHERE id = @id");
+
+    if (result.recordset.length === 0) {
+      return res.status(404).send("❌ Không tìm thấy bản ghi cân rác");
+    }
+
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("❌ Lỗi khi truy vấn dữ liệu");
+  }
+});
+
+app.put("/trash-weighings/:id", async (req, res) => {
+  const { id } = req.params;
+  const {
+    weightKg,
+    workShift,
+    workDate,
+    userName,
+    updatedAt,
+    updatedBy,
+  } = req.body;
+
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input("id", sql.Int, id)
+      .input("weightKg", sql.Float, weightKg)
+      .input("workShift", sql.NVarChar, workShift)
+      .input("workDate", sql.Date, workDate)
+      .input("userName", sql.NVarChar, userName)
+      .input("updatedAt", sql.DateTime, updatedAt)
+      .input("updatedBy", sql.Int, updatedBy)
+      .query(`
+        UPDATE TrashWeighings
+        SET
+          weightKg = @weightKg,
+          workShift = @workShift,
+          workDate = @workDate,
+          userName = @userName,
+          updatedAt = @updatedAt,
+          updatedBy = @updatedBy
+        WHERE id = @id
+      `);
+
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).send("❌ Không tìm thấy bản ghi để cập nhật");
+    }
+
+    res.send("✅ Đã cập nhật bản ghi cân rác");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("❌ Lỗi khi cập nhật dữ liệu");
+  }
+});
+
 
 app.get("/history/date", async (req, res) => {
   const { date } = req.query;
