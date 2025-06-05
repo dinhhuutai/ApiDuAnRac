@@ -83,12 +83,12 @@ app.post("/trash-weighings", async (req, res) => {
       .input("userName", sql.NVarChar, userName)
       .query(`
         INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName)
-        OUTPUT INSERTED.id
+        OUTPUT INSERTED.weighingID
         VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @workShift, @updatedAt, @updatedBy, @workDate, @userName)
       `);
 
     
-    const insertedId = result.recordset[0].id;
+    const insertedId = result.recordset[0].weighingID;
 
 
     res.status(200).json({
