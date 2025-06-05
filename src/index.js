@@ -65,7 +65,6 @@ console.log('id: ', id);
   }
 });
 
-
 const teamUnitMap = {
   'Điều hành': [],
   'Chất lượng': [],
@@ -124,6 +123,7 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
     res.status(500).json({ message: 'Error fetching unscanned teams' });
   }
 });
+
 
 
 // GET /trash-weighings/check?trashBinCode=XXX&workShift=YYY&workDate=ZZZ
