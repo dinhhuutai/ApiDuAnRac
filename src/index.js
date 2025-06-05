@@ -86,7 +86,6 @@ const teamUnitMap = {
   'Chụp khung': [],
   'Pha màu': [],
 };
-
 app.get('/trash-weighings/unscanned-teams', async (req, res) => {
   const { workDate, workShift } = req.query;
 
@@ -97,6 +96,7 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
   try {
     const pool = await poolPromise;
 
+    // 1. Lấy danh sách các đơn vị đã quét mã
     const scannedResult = await pool.request()
       .input('workDate', sql.Date, workDate)
       .input('workShift', sql.NVarChar, workShift)
@@ -105,24 +105,34 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
         WHERE workDate = @workDate AND workShift = @workShift
       `);
 
-    const scannedUnits = scannedResult.recordset.map(r => r.trashBinCode);
+    const scannedUnits = scannedResult.recordset.map(r => r.trashBinCode.trim());
 
-    const result = [];
+    console.log("Scanned Units:", scannedUnits);
+
+    // 2. Xác định tổ chưa quét
+    const unscannedTeams = [];
+
     for (const [team, units] of Object.entries(teamUnitMap)) {
       if (units.length === 0) continue;
 
-      const isScanned = units.some(unit => scannedUnits.includes(unit));
-      if (!isScanned) {
-        result.push(team);
+      const hasAnyScanned = units.some(unit =>
+        scannedUnits.includes(unit)
+      );
+
+      if (!hasAnyScanned) {
+        unscannedTeams.push(team);
       }
     }
 
-    res.json({ unscannedTeams: result });
+    console.log(unscannedTeams);
+
+    return res.json({ unscannedTeams });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error fetching unscanned teams' });
   }
 });
+
 
 
 // GET /trash-weighings/check?trashBinCode=XXX&workShift=YYY&workDate=ZZZ
