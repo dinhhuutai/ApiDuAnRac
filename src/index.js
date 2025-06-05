@@ -155,6 +155,72 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
   }
 });
 
+app.get('/trash-weighings/longest-unweighed', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    // Lấy ngày cân gần nhất của từng tổ - đơn vị
+    const result = await pool.request().query(`
+      SELECT 
+        d.departmentName AS team,
+        u.unitName AS unit,
+        MAX(tw.workDate) AS lastWeighedDate
+      FROM TrashWeighings tw
+      JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+      JOIN Departments d ON tb.departmentID = d.departmentID
+      LEFT JOIN Units u ON tb.unitID = u.unitID
+      GROUP BY d.departmentName, u.unitName
+    `);
+
+    const lastWeighedMap = new Map(); // key: `${team}_${unit}` => date
+
+    for (const row of result.recordset) {
+      const key = `${row.team?.trim()}_${row.unit?.trim()}`;
+      lastWeighedMap.set(key, row.lastWeighedDate);
+    }
+
+    const today = new Date();
+    const output = [];
+
+    for (const [team, units] of Object.entries(teamUnitMap)) {
+      if (units.length === 0) {
+        const key = `${team}_`;
+        const lastDate = lastWeighedMap.get(key);
+        if (lastDate) {
+          const days = Math.floor((today - new Date(lastDate)) / (1000 * 60 * 60 * 24));
+          if (days > 0) {
+            output.push({ team, unit: '', days });
+          }
+        }
+      } else {
+        for (const unit of units) {
+          const key = `${team}_${unit}`;
+          const lastDate = lastWeighedMap.get(key);
+          if (lastDate) {
+            const days = Math.floor((today - new Date(lastDate)) / (1000 * 60 * 60 * 24));
+            if (days > 0) {
+              output.push({ team, unit, days });
+            }
+          } else {
+            // chưa từng cân lần nào
+            output.push({ team, unit, days: 9999 });
+          }
+        }
+      }
+    }
+
+    // Sắp xếp giảm dần theo số ngày chưa cân
+    output.sort((a, b) => b.days - a.days);
+
+    // Trả về top 10 tổ - đơn vị lâu nhất chưa cân
+    const topLongest = output.slice(0, 10);
+
+    return res.json({ longestUnweighed: topLongest });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
+  }
+});
 
 // GET /trash-weighings/check?trashBinCode=XXX&workShift=YYY&workDate=ZZZ
 
