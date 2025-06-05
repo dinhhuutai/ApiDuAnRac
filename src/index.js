@@ -123,6 +123,8 @@ app.get("/trash-weighings/:id", async (req, res) => {
 
 app.put("/trash-weighings/:id", async (req, res) => {
   const { id } = req.params;
+
+  console.log('id: ', id);
   const {
     weightKg,
     workShift,
@@ -141,7 +143,7 @@ app.put("/trash-weighings/:id", async (req, res) => {
       .input("workDate", sql.Date, workDate)
       .input("userName", sql.NVarChar, userName)
       .input("updatedAt", sql.DateTime, updatedAt)
-      .input("updatedBy", sql.Int, updatedBy)
+      .input("updatedBy", sql.Int, id)
       .query(`
         UPDATE TrashWeighings
         SET
