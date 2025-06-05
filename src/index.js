@@ -135,7 +135,7 @@ app.put("/trash-weighings/:id", async (req, res) => {
   try {
     const pool = await poolPromise;
     const result = await pool.request()
-      .input("id", sql.Int, id)
+      .input("weightID", sql.Int, id)
       .input("weightKg", sql.Float, weightKg)
       .input("workShift", sql.NVarChar, workShift)
       .input("workDate", sql.Date, workDate)
@@ -151,7 +151,7 @@ app.put("/trash-weighings/:id", async (req, res) => {
           userName = @userName,
           updatedAt = @updatedAt,
           updatedBy = @updatedBy
-        WHERE id = @id
+        WHERE weightID = @weightID
       `);
 
     if (result.rowsAffected[0] === 0) {
