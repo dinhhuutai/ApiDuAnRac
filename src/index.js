@@ -222,6 +222,59 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
   }
 });
 
+app.get('/trash-weighings/compare-weight-by-department', async (req, res) => {
+  const { department1, department2 } = req.query;
+
+  if (!department1 || !department2) {
+    return res.status(400).json({ message: 'Thiếu department1 hoặc department2' });
+  }
+
+  try {
+    const pool = await poolPromise;
+
+    const result = await pool.request()
+      .input('dep1', sql.NVarChar, department1)
+      .input('dep2', sql.NVarChar, department2)
+      .query(`
+        SELECT 
+          d.departmentName,
+          tw.workDate,
+          SUM(tw.weightKg) AS totalWeight
+        FROM TrashWeighings tw
+        JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+        JOIN Departments d ON tb.departmentID = d.departmentID
+        WHERE d.departmentName IN (@dep1, @dep2)
+          AND tw.workDate >= DATEADD(DAY, -6, CAST(GETDATE() AS DATE)) -- 7 ngày gần nhất
+        GROUP BY d.departmentName, tw.workDate
+        ORDER BY tw.workDate ASC
+      `);
+
+    // Chuẩn hoá dữ liệu cho biểu đồ
+    const dateMap = new Map(); // workDate => { dep1: weight, dep2: weight }
+
+    for (const row of result.recordset) {
+      const dateStr = row.workDate.toISOString().split('T')[0];
+      if (!dateMap.has(dateStr)) {
+        dateMap.set(dateStr, { [department1]: 0, [department2]: 0 });
+      }
+      dateMap.get(dateStr)[row.departmentName] = parseFloat(row.totalWeight);
+    }
+
+    // Trả dữ liệu dạng mảng ngày và 2 cột
+    const chartData = Array.from(dateMap.entries()).map(([date, values]) => ({
+      date,
+      [department1]: values[department1] || 0,
+      [department2]: values[department2] || 0
+    }));
+
+    return res.json({ chartData });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
+  }
+});
+
+
 // GET /trash-weighings/check?trashBinCode=XXX&workShift=YYY&workDate=ZZZ
 
 app.get("/trash-weighings/check", async (req, res) => {
