@@ -65,6 +65,7 @@ console.log('id: ', id);
   }
 });
 
+
 const teamUnitMap = {
   'Điều hành': [],
   'Chất lượng': [],
@@ -91,7 +92,7 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
   const { workDate, workShift } = req.query;
 
   if (!workDate || !workShift) {
-    return res.status(400).json({ message: 'Missing workDate or workShift' });
+    return res.status(400).json({ message: 'Thiếu workDate hoặc workShift' });
   }
 
   try {
@@ -106,25 +107,30 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
       `);
 
     const scannedUnits = scannedResult.recordset.map(r => r.trashBinCode.trim());
-    console.log("✅ Đã quét:", scannedUnits);
 
-    const unscannedMap = {};
+    const unscannedTeams = {};
 
     for (const [team, units] of Object.entries(teamUnitMap)) {
-      if (!units || units.length === 0) continue;
-
-      const unscannedUnits = units.filter(unit => !scannedUnits.includes(unit));
-
-      if (unscannedUnits.length === units.length) {
-        unscannedMap[team] = unscannedUnits;
+      // Nếu không có đơn vị con
+      if (!units || units.length === 0) {
+        // Nếu bộ phận không xuất hiện trong danh sách quét thì coi là chưa quét
+        const teamScanned = scannedUnits.some(unit => unit.toLowerCase().includes(team.toLowerCase()));
+        if (!teamScanned) {
+          unscannedTeams[team] = [];
+        }
+      } else {
+        // Có đơn vị con
+        const unscanned = units.filter(unit => !scannedUnits.includes(unit));
+        if (unscanned.length > 0) {
+          unscannedTeams[team] = unscanned;
+        }
       }
     }
 
-    console.log("❌ Chưa quét:", unscannedMap);
-    return res.json({ unscannedTeams: unscannedMap });
+    return res.json({ unscannedTeams });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Error fetching unscanned teams' });
+    return res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
   }
 });
 
