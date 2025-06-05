@@ -65,6 +65,67 @@ console.log('id: ', id);
   }
 });
 
+// Ánh xạ tổ - đơn vị viết sẵn trong mã
+const teamUnitMap = {
+  'Điều hành': [],
+  'Chất lượng': [],
+  'Bán hàng': [],
+  'Kế hoạch': [],
+  'IT - Bảo trì': [],
+  'Văn phòng': [],
+  'Vật tư': [],
+  'Tổ canh hàng': [],
+  'Tổ bổ sung': [],
+  'Tổ mẫu': [],
+  'Tổ 3': ['Chuyền 1', 'Chuyền 2', 'Chuyền 3', 'Chuyền 4', 'Chuyền 5', 'Chuyền 6', 'Chuyền 7', 'Chuyền 8', 'Rác thải chung'],
+  'Tổ 4': ['Chuyền 4A-4B', 'Chuyền 5A-5B', 'Chuyền 6A-6B', 'Chuyền 7A-7B', 'Chuyền 8A-8B', 'Chuyền 9A-9B', 'Chuyền 10A', 'Chuyền 11A', 'Chuyền 12A', 'Chuyền 13A', 'Chuyền 14A', 'Chuyền RB1', 'Chuyền RB2', 'Chuyền RB3', 'Rác thải chung'],
+  'Tổ 5': ['Chuyền 10B', 'Chuyền 11B', 'Chuyền 12B', 'Chuyền 13B', 'Chuyền 14B', 'Rác thải chung'],
+  'Tổ sửa hàng': [],
+  'Tổ ép': [],
+  'Tổ logo': [],
+  'Kcs': [],
+  'Chụp khung': [],
+  'Pha màu': [],
+};
+
+app.get('/trash-weighings/unscanned', async (req, res) => {
+  const { workDate, workShift } = req.query;
+
+  if (!workDate || !workShift) {
+    return res.status(400).json({ message: 'Missing workDate or workShift' });
+  }
+
+  try {
+    const pool = await poolPromise;
+
+    // Lấy danh sách các đơn vị đã quét mã
+    const scannedResult = await pool.request()
+      .input('workDate', sql.Date, workDate)
+      .input('workShift', sql.NVarChar, workShift)
+      .query(`
+        SELECT DISTINCT trashBinCode FROM TrashWeighings
+        WHERE workDate = @workDate AND workShift = @workShift
+      `);
+
+    const scannedUnits = scannedResult.recordset.map(r => r.trashBinCode);
+
+    // Lọc ra các đơn vị chưa quét theo tổ
+    const result = {};
+    for (const [team, units] of Object.entries(teamUnitMap)) {
+      const unscanned = units.filter(unit => !scannedUnits.includes(unit));
+      if (unscanned.length > 0) {
+        result[team] = unscanned;
+      }
+    }
+
+    res.json({ unscanned: result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error fetching unscanned data' });
+  }
+});
+
+
 // GET /trash-weighings/check?trashBinCode=XXX&workShift=YYY&workDate=ZZZ
 
 app.get("/trash-weighings/check", async (req, res) => {
