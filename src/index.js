@@ -67,11 +67,44 @@ console.log('id: ', id);
 
 
 app.post("/trash-weighings", async (req, res) => {
-  const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName } = req.body;
+  const {
+    trashBinCode,
+    userID,
+    weighingTime,
+    weightKg,
+    workShift,
+    updatedAt,
+    updatedBy,
+    workDate,
+    userName,
+  } = req.body;
 
   try {
     const pool = await poolPromise;
-    const result = await pool.request()
+
+    // ⚠️ 1. Kiểm tra xem đã có bản ghi trong cùng workDate + workShift + trashBinCode chưa
+    const checkResult = await pool.request()
+      .input("trashBinCode", sql.NVarChar, trashBinCode)
+      .input("workDate", sql.Date, workDate)
+      .input("workShift", sql.NVarChar, workShift)
+      .query(`
+        SELECT TOP 1 * FROM TrashWeighings
+        WHERE trashBinCode = @trashBinCode
+          AND workDate = @workDate
+          AND workShift = @workShift
+      `);
+
+    if (checkResult.recordset.length > 0) {
+      const existing = checkResult.recordset[0];
+      return res.status(409).json({
+        message: "⚠️ Thùng rác này đã được quét trong ca làm việc hôm nay.",
+        existingWeight: existing.weightKg,
+        existingTime: existing.weighingTime,
+      });
+    }
+
+    // ✅ 2. Nếu chưa có, thực hiện insert
+    const insertResult = await pool.request()
       .input("trashBinCode", sql.NVarChar, trashBinCode)
       .input("userID", sql.Int, userID)
       .input("weighingTime", sql.DateTime, weighingTime)
@@ -82,24 +115,30 @@ app.post("/trash-weighings", async (req, res) => {
       .input("workDate", sql.Date, workDate)
       .input("userName", sql.NVarChar, userName)
       .query(`
-        INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName)
+        INSERT INTO TrashWeighings (
+          trashBinCode, userID, weighingTime, weightKg,
+          workShift, updatedAt, updatedBy, workDate, userName
+        )
         OUTPUT INSERTED.weighingID
-        VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @workShift, @updatedAt, @updatedBy, @workDate, @userName)
+        VALUES (
+          @trashBinCode, @userID, @weighingTime, @weightKg,
+          @workShift, @updatedAt, @updatedBy, @workDate, @userName
+        )
       `);
 
-    
-    const insertedId = result.recordset[0].weighingID;
-
+    const insertedId = insertResult.recordset[0].weighingID;
 
     res.status(200).json({
       message: "✅ Đã thêm bản ghi cân rác",
       id: insertedId,
     });
+
   } catch (err) {
-    console.log(err)
+    console.error("❌ Error inserting trash weighing:", err);
     res.status(500).send("❌ Lỗi khi thêm dữ liệu");
   }
 });
+
 
 app.get("/trash-weighings/:id", async (req, res) => {
   const { id } = req.params;
