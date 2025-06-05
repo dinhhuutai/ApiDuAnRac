@@ -71,7 +71,7 @@ app.post("/trash-weighings", async (req, res) => {
 
   try {
     const pool = await poolPromise;
-    await pool.request()
+    const result = await pool.request()
       .input("trashBinCode", sql.NVarChar, trashBinCode)
       .input("userID", sql.Int, userID)
       .input("weighingTime", sql.DateTime, weighingTime)
