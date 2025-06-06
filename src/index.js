@@ -155,7 +155,7 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
   }
 });
 
-app.get('/trash-weighings/longest-unweighed', async (req, res) => {
+app.get('/trash-weighings/longest-unweighed', async (req, res) => { 
   try {
     const pool = await poolPromise;
 
@@ -182,32 +182,26 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
     const output = [];
 
     for (const [team, units] of Object.entries(teamUnitMap)) {
-      // Xử lý từng đơn vị
       for (const unit of units) {
         const key = `${team}_${unit}`;
         const lastDate = lastWeighedMap.get(key);
         if (lastDate) {
           const days = Math.floor((today - new Date(lastDate)) / (1000 * 60 * 60 * 24));
-          if (days > 2) {
-            output.push({ team, unit, days });
-          }
+          output.push({ team, unit, days });
         } else {
-          // chưa từng cân lần nào
           output.push({ team, unit, days: 9999 });
         }
       }
 
-      // Nếu tổ không có đơn vị con
       const teamKey = `${team}_`;
       const teamLastDate = lastWeighedMap.get(teamKey);
       if (units.length === 0 && teamLastDate) {
         const days = Math.floor((today - new Date(teamLastDate)) / (1000 * 60 * 60 * 24));
-        if (days > 2) {
-          output.push({ team, unit: '', days });
-        }
+        output.push({ team, unit: '', days });
+      } else if (units.length === 0 && !teamLastDate) {
+        output.push({ team, unit: '', days: 9999 });
       }
 
-      // Nếu tổ có đơn vị nhưng tổ gốc không có record riêng => tính tổng thể từ các đơn vị
       if (units.length > 0 && !lastWeighedMap.has(teamKey)) {
         const latestDates = units
           .map((unit) => lastWeighedMap.get(`${team}_${unit}`))
@@ -219,23 +213,18 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
 
         if (lastDate) {
           const days = Math.floor((today - lastDate) / (1000 * 60 * 60 * 24));
-          if (days > 2) {
-            output.push({ team, unit: '[Tổng hợp]', days });
-          }
+          output.push({ team, unit: '[Tổng hợp]', days });
         } else {
-          // Không có đơn vị nào từng cân
           output.push({ team, unit: '[Tổng hợp]', days: 9999 });
         }
       }
     }
 
-    // Sắp xếp giảm dần theo số ngày chưa cân
+    // Sắp xếp theo ngày chưa cân giảm dần
     output.sort((a, b) => b.days - a.days);
 
-    // Trả về top 10 tổ - đơn vị lâu nhất chưa cân
-    const topLongest = output.slice(0, 10);
-
-    return res.json({ longestUnweighed: topLongest });
+    // ✅ Trả về toàn bộ danh sách, không chỉ top 10
+    return res.json({ longestUnweighed: output });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
