@@ -173,7 +173,6 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
     `);
 
     const lastWeighedMap = new Map();
-
     for (const row of result.recordset) {
       const key = `${row.team?.trim()}_${row.unit?.trim()}`;
       lastWeighedMap.set(key, row.lastWeighedDate);
@@ -183,28 +182,49 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
     const output = [];
 
     for (const [team, units] of Object.entries(teamUnitMap)) {
-      if (units.length === 0) {
-        const key = `${team}_`;
+      // Xử lý từng đơn vị
+      for (const unit of units) {
+        const key = `${team}_${unit}`;
         const lastDate = lastWeighedMap.get(key);
         if (lastDate) {
           const days = Math.floor((today - new Date(lastDate)) / (1000 * 60 * 60 * 24));
-          if (days > 0) {
-            output.push({ team, unit: '', days });
+          if (days > 2) {
+            output.push({ team, unit, days });
           }
+        } else {
+          // chưa từng cân lần nào
+          output.push({ team, unit, days: 9999 });
         }
-      } else {
-        for (const unit of units) {
-          const key = `${team}_${unit}`;
-          const lastDate = lastWeighedMap.get(key);
-          if (lastDate) {
-            const days = Math.floor((today - new Date(lastDate)) / (1000 * 60 * 60 * 24));
-            if (days > 0) {
-              output.push({ team, unit, days });
-            }
-          } else {
-            // chưa từng cân lần nào
-            output.push({ team, unit, days: 9999 });
+      }
+
+      // Nếu tổ không có đơn vị con
+      const teamKey = `${team}_`;
+      const teamLastDate = lastWeighedMap.get(teamKey);
+      if (units.length === 0 && teamLastDate) {
+        const days = Math.floor((today - new Date(teamLastDate)) / (1000 * 60 * 60 * 24));
+        if (days > 2) {
+          output.push({ team, unit: '', days });
+        }
+      }
+
+      // Nếu tổ có đơn vị nhưng tổ gốc không có record riêng => tính tổng thể từ các đơn vị
+      if (units.length > 0 && !lastWeighedMap.has(teamKey)) {
+        const latestDates = units
+          .map((unit) => lastWeighedMap.get(`${team}_${unit}`))
+          .filter(Boolean);
+
+        const lastDate = latestDates.length > 0
+          ? new Date(Math.max(...latestDates.map(d => new Date(d))))
+          : null;
+
+        if (lastDate) {
+          const days = Math.floor((today - lastDate) / (1000 * 60 * 60 * 24));
+          if (days > 2) {
+            output.push({ team, unit: '[Tổng hợp]', days });
           }
+        } else {
+          // Không có đơn vị nào từng cân
+          output.push({ team, unit: '[Tổng hợp]', days: 9999 });
         }
       }
     }
@@ -221,6 +241,7 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
     res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
   }
 });
+
 
 app.get('/trash-weighings/compare-weight-by-department', async (req, res) => {
   const { department1, department2 } = req.query;
