@@ -201,23 +201,6 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
       } else if (units.length === 0 && !teamLastDate) {
         output.push({ team, unit: '', days: 9999 });
       }
-
-      if (units.length > 0 && !lastWeighedMap.has(teamKey)) {
-        const latestDates = units
-          .map((unit) => lastWeighedMap.get(`${team}_${unit}`))
-          .filter(Boolean);
-
-        const lastDate = latestDates.length > 0
-          ? new Date(Math.max(...latestDates.map(d => new Date(d))))
-          : null;
-
-        if (lastDate) {
-          const days = Math.floor((today - lastDate) / (1000 * 60 * 60 * 24));
-          output.push({ team, unit: '[Tổng hợp]', days });
-        } else {
-          output.push({ team, unit: '[Tổng hợp]', days: 9999 });
-        }
-      }
     }
 
     // Sắp xếp theo ngày chưa cân giảm dần
