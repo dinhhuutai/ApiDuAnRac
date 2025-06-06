@@ -148,7 +148,24 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
       }
     }
 
-    return res.json({ unscannedTeams });
+    const scannedTeams = {}; // Mới
+
+    for (const [team, units] of Object.entries(teamUnitMap)) {
+      const scannedUnits = scannedMap.get(team) || new Set();
+
+      if (units.length === 0) {
+        if (scannedMap.has(team)) {
+          scannedTeams[team] = [];
+        }
+      } else {
+        const scanned = units.filter(unit => scannedUnits.has(unit));
+        if (scanned.length > 0) {
+          scannedTeams[team] = scanned;
+        }
+      }
+    }
+
+    return res.json({ unscannedTeams, scannedTeams });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
