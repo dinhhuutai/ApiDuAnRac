@@ -43,6 +43,72 @@ app.get("/users/get", async (req, res) => {
   }
 });
 
+app.get("/trashbins/get-id-by-names", async (req, res) => {
+  const { departmentName, unitName, trashName } = req.query;
+
+  console.log({ departmentName, unitName, trashName })
+  try {
+    const pool = await poolPromise;
+
+    // 1. Lấy ID các bảng liên quan
+    const result = await pool.request()
+      .input("departmentName", sql.NVarChar, departmentName)
+      .input("unitName", sql.NVarChar, unitName)
+      .input("trashName", sql.NVarChar, trashName)
+      .query(`
+        IF @unitName = ''
+        BEGIN
+          -- Không lọc theo đơn vị
+          SELECT 
+            d.departmentID,
+            NULL AS unitID,
+            t.trashTypeID,
+            b.trashBinID,
+            b.trashBinCode,
+            b.stringJsonCodeQr
+          FROM TrashBins b
+          JOIN Departments d ON b.departmentID = d.departmentID
+          JOIN TrashTypes t ON b.trashTypeID = t.trashTypeID
+          WHERE 
+            b.unitID IS NULL AND
+            LTRIM(RTRIM(d.departmentName)) COLLATE Latin1_General_CI_AI = LTRIM(RTRIM(@departmentName)) COLLATE Latin1_General_CI_AI AND
+            LTRIM(RTRIM(t.trashName)) COLLATE Latin1_General_CI_AI = LTRIM(RTRIM(@trashName)) COLLATE Latin1_General_CI_AI;
+        END
+        ELSE
+        BEGIN
+          -- Có đơn vị, JOIN và lọc như bình thường
+          SELECT 
+            d.departmentID,
+            u.unitID,
+            t.trashTypeID,
+            b.trashBinID,
+            b.trashBinCode,
+            b.stringJsonCodeQr
+          FROM TrashBins b
+          JOIN Departments d ON b.departmentID = d.departmentID
+          JOIN Units u ON b.unitID = u.unitID
+          JOIN TrashTypes t ON b.trashTypeID = t.trashTypeID
+          WHERE 
+            LTRIM(RTRIM(d.departmentName)) COLLATE Latin1_General_CI_AI = LTRIM(RTRIM(@departmentName)) COLLATE Latin1_General_CI_AI AND
+            LTRIM(RTRIM(u.unitName)) COLLATE Latin1_General_CI_AI = LTRIM(RTRIM(@unitName)) COLLATE Latin1_General_CI_AI AND
+            LTRIM(RTRIM(t.trashName)) COLLATE Latin1_General_CI_AI = LTRIM(RTRIM(@trashName)) COLLATE Latin1_General_CI_AI;
+        END
+      `);
+
+    console.log(result);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ message: "Không tìm thấy thông tin phù hợp" });
+    }
+
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error("❌ Lỗi khi truy vấn TrashBins:", err);
+    res.status(500).send("Lỗi server");
+  }
+});
+
+
 app.delete('/users/delete/:id', async (req, res) => {
   try {
     const pool = await poolPromise;
