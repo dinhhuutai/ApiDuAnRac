@@ -25,7 +25,7 @@ app.post('/api/scale/data', (req, res) => {
   console.log("Dữ liệu nhận được từ ESP32:");
   console.log(req.body); // In ra JSON
 
-  res.json({ message: 'Đã nhận JSON thành công!' });
+  res.json({ message: 'Đã nhận JSON thành công!', data: req.body });
 });
 
 
@@ -121,9 +121,10 @@ app.delete('/users/delete/:id', async (req, res) => {
     res.status(500).send('Lỗi server');
   }
 });
+
 app.delete('/history/delete/:id', async (req, res) => {
   const { id } = req.params;
-console.log('id: ', id);
+  console.log('id: ', id);
   try {
     const pool = await poolPromise;
 
@@ -162,7 +163,99 @@ const teamUnitMap = {
   'Pha màu': [],
 };
 
-app.get('/trash-weighings/unscanned-teams', async (req, res) => {
+// app.get('/trash-weighings/tracking-scan', async (req, res) => {
+//   const { workDate, workShift } = req.query;
+
+//   if (!workDate || !workShift) {
+//     return res.status(400).json({ message: 'Thiếu workDate hoặc workShift' });
+//   }
+
+//   try {
+//     const pool = await poolPromise;
+
+//     // Lấy danh sách trashBin đã quét cùng departmentName + unitName
+//     const scannedResult = await pool.request()
+//       .input('workDate', sql.Date, workDate)
+//       .input('workShift', sql.NVarChar, workShift)
+//       .query(`
+//         SELECT DISTINCT 
+//           tb.trashBinCode,
+//           d.departmentName,
+//           u.unitName,
+//           tt.trashName,
+//           us.fullName
+//         FROM TrashWeighings tw
+//         JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
+//         JOIN Departments d ON tb.departmentID = d.departmentID
+//         LEFT JOIN Units u ON tb.unitID = u.unitID
+//         JOIN TrashTypes tt ON tb.TrashTypeID = tt.TrashTypeID
+//         JOIN Users us ON tw.userID = us.userID
+//         WHERE tw.workDate = @workDate AND tw.workShift = @workShift
+//       `);
+
+//     console.log(scannedResult);
+
+//     // Tạo map danh sách bộ phận và đơn vị đã quét
+//     const scannedMap = new Map(); // departmentName => Set(unitName)
+//     for (const row of scannedResult.recordset) {
+//       const dept = row.departmentName?.trim();
+//       const unit = row.unitName?.trim();
+
+//       if (!scannedMap.has(dept)) {
+//         scannedMap.set(dept, new Set());
+//       }
+
+//       if (unit) {
+//         scannedMap.get(dept).add(unit);
+//       }
+//     }
+    
+//     console.log(scannedMap);
+
+//     const unscannedTeams = {};
+
+//     for (const [team, units] of Object.entries(teamUnitMap)) {
+//       const scannedUnits = scannedMap.get(team) || new Set();
+
+//       if (units.length === 0) {
+//         // Bộ phận không có đơn vị con, kiểm tra đã quét chưa
+//         if (!scannedMap.has(team)) {
+//           unscannedTeams[team] = [];
+//         }
+//       } else {
+//         // Bộ phận có đơn vị con, kiểm tra đơn vị nào chưa quét
+//         const unscanned = units.filter(unit => !scannedUnits.has(unit));
+//         if (unscanned.length > 0) {
+//           unscannedTeams[team] = unscanned;
+//         }
+//       }
+//     }
+
+//     const scannedTeams = {}; // Mới
+
+//     for (const [team, units] of Object.entries(teamUnitMap)) {
+//       const scannedUnits = scannedMap.get(team) || new Set();
+
+//       if (units.length === 0) {
+//         if (scannedMap.has(team)) {
+//           scannedTeams[team] = [];
+//         }
+//       } else {
+//         const scanned = units.filter(unit => scannedUnits.has(unit));
+//         if (scanned.length > 0) {
+//           scannedTeams[team] = scanned;
+//         }
+//       }
+//     }
+
+//     return res.json({ unscannedTeams, scannedTeams });
+//   } catch (err) {
+//     console.error(err);
+//     return res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
+//   }
+// });
+
+app.get('/trash-weighings/tracking-scan', async (req, res) => {
   const { workDate, workShift } = req.query;
 
   if (!workDate || !workShift) {
@@ -172,7 +265,6 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
   try {
     const pool = await poolPromise;
 
-    // Lấy danh sách trashBin đã quét cùng departmentName + unitName
     const scannedResult = await pool.request()
       .input('workDate', sql.Date, workDate)
       .input('workShift', sql.NVarChar, workShift)
@@ -180,41 +272,45 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
         SELECT DISTINCT 
           tb.trashBinCode,
           d.departmentName,
-          u.unitName
+          u.unitName,
+          tt.trashName,
+          us.fullName
         FROM TrashWeighings tw
         JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
         JOIN Departments d ON tb.departmentID = d.departmentID
         LEFT JOIN Units u ON tb.unitID = u.unitID
+        JOIN TrashTypes tt ON tb.TrashTypeID = tt.TrashTypeID
+        JOIN Users us ON tw.userID = us.userID
         WHERE tw.workDate = @workDate AND tw.workShift = @workShift
       `);
 
-    // Tạo map danh sách bộ phận và đơn vị đã quét
-    const scannedMap = new Map(); // departmentName => Set(unitName)
+    // ==============================
+    // 1. Xử lý scannedMap (team => set(unit))
+    // ==============================
+    const scannedMap = new Map();
     for (const row of scannedResult.recordset) {
       const dept = row.departmentName?.trim();
       const unit = row.unitName?.trim();
-
       if (!scannedMap.has(dept)) {
         scannedMap.set(dept, new Set());
       }
-
       if (unit) {
         scannedMap.get(dept).add(unit);
       }
     }
 
+    // ==============================
+    // 2. Tính unscannedTeams
+    // ==============================
     const unscannedTeams = {};
-
     for (const [team, units] of Object.entries(teamUnitMap)) {
       const scannedUnits = scannedMap.get(team) || new Set();
 
       if (units.length === 0) {
-        // Bộ phận không có đơn vị con, kiểm tra đã quét chưa
         if (!scannedMap.has(team)) {
           unscannedTeams[team] = [];
         }
       } else {
-        // Bộ phận có đơn vị con, kiểm tra đơn vị nào chưa quét
         const unscanned = units.filter(unit => !scannedUnits.has(unit));
         if (unscanned.length > 0) {
           unscannedTeams[team] = unscanned;
@@ -222,8 +318,10 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
       }
     }
 
-    const scannedTeams = {}; // Mới
-
+    // ==============================
+    // 3. Tính scannedTeams
+    // ==============================
+    const scannedTeams = {};
     for (const [team, units] of Object.entries(teamUnitMap)) {
       const scannedUnits = scannedMap.get(team) || new Set();
 
@@ -239,19 +337,91 @@ app.get('/trash-weighings/unscanned-teams', async (req, res) => {
       }
     }
 
-    return res.json({ unscannedTeams, scannedTeams });
+    // ==============================
+    // 4. Gom toàn bộ bộ phận + đơn vị (kể cả chưa quét)
+    // ==============================
+    const groupedResults = {};
+    for (const row of scannedResult.recordset) {
+      const dept = row.departmentName?.trim();
+      const unit = row.unitName?.trim() || null;
+      const fullName = row.fullName?.trim() || null;
+      const trashBinCode = row.trashBinCode?.trim();
+      const trashName = row.trashName?.trim();
+
+      const key = `${dept}|${unit}`;
+      if (!groupedResults[key]) {
+        groupedResults[key] = {
+          departmentName: dept,
+          unitName: unit,
+          fullName: fullName,
+          trashBinCodes: new Set(),
+          trashNames: new Set(),
+        };
+      }
+
+      if (trashBinCode) groupedResults[key].trashBinCodes.add(trashBinCode);
+      if (trashName) groupedResults[key].trashNames.add(trashName);
+    }
+
+    const groupedScannedList = [];
+
+    for (const [dept, units] of Object.entries(teamUnitMap)) {
+      if (units.length === 0) {
+        const key = `${dept}|null`;
+        const item = groupedResults[key];
+
+        groupedScannedList.push({
+          departmentName: dept,
+          unitName: null,
+          fullName: item?.fullName || null,
+          trashBinCodes: item ? Array.from(item.trashBinCodes) : [],
+          trashNames: item ? Array.from(item.trashNames) : [],
+          isScannedTeam: !!scannedTeams[dept],
+          isUnscannedTeam: !!unscannedTeams[dept],
+        });
+      } else {
+        for (const unit of units) {
+          const key = `${dept}|${unit}`;
+          const item = groupedResults[key];
+
+          groupedScannedList.push({
+            departmentName: dept,
+            unitName: unit,
+            fullName: item?.fullName || null,
+            trashBinCodes: item ? Array.from(item.trashBinCodes) : [],
+            trashNames: item ? Array.from(item.trashNames) : [],
+            isScannedTeam:
+              !!scannedTeams[dept] &&
+              (scannedTeams[dept].length === 0 || scannedTeams[dept].includes(unit)),
+            isUnscannedTeam:
+              !!unscannedTeams[dept] &&
+              (unscannedTeams[dept].length === 0 || unscannedTeams[dept].includes(unit)),
+          });
+        }
+      }
+    }
+
+    // ==============================
+    // 5. Trả kết quả
+    // ==============================
+    return res.json({
+      unscannedTeams,
+      scannedTeams,
+      groupedScannedList,
+    });
+
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
   }
 });
 
-app.get('/trash-weighings/longest-unweighed', async (req, res) => { 
+app.get('/trash-weighings/longest-unscanned', async (req, res) => {
   try {
     const pool = await poolPromise;
 
-    // Lấy ngày cân gần nhất của từng tổ - đơn vị
-    const result = await pool.request().query(`
+    // 1. Lấy ngày cân gần nhất theo tổ - đơn vị
+    const weighedResult = await pool.request().query(`
       SELECT 
         d.departmentName AS team,
         u.unitName AS unit,
@@ -263,44 +433,50 @@ app.get('/trash-weighings/longest-unweighed', async (req, res) => {
       GROUP BY d.departmentName, u.unitName
     `);
 
+    // 2. Tạo Map với key "team_unit" (xử lý unit null)
     const lastWeighedMap = new Map();
-    for (const row of result.recordset) {
-      const key = `${row.team?.trim()}_${row.unit?.trim()}`;
+    for (const row of weighedResult.recordset) {
+      const team = row.team?.trim() || '';
+      const unit = row.unit?.trim() || '';
+      const key = `${team}_${unit}`;
       lastWeighedMap.set(key, row.lastWeighedDate);
     }
 
+    // 3. Tạo danh sách đầu ra từ teamUnitMap
     const today = new Date();
     const output = [];
 
     for (const [team, units] of Object.entries(teamUnitMap)) {
-      for (const unit of units) {
-        const key = `${team}_${unit}`;
-        const lastDate = lastWeighedMap.get(key);
-        if (lastDate) {
-          const days = Math.floor((today - new Date(lastDate)) / (1000 * 60 * 60 * 24));
-          output.push({ team, unit, days });
-        } else {
-          output.push({ team, unit, days: 9999 });
+      if (units.length > 0) {
+        for (const unit of units) {
+          const key = `${team.trim()}_${unit.trim()}`;
+          const lastWeighed = lastWeighedMap.get(key);
+          const weighedDays = lastWeighed
+            ? Math.floor((today - new Date(lastWeighed)) / (1000 * 60 * 60 * 24))
+            : 9999;
+          output.push({ team, unit, weighedDays });
         }
-      }
-
-      const teamKey = `${team}_`;
-      const teamLastDate = lastWeighedMap.get(teamKey);
-      if (units.length === 0 && teamLastDate) {
-        const days = Math.floor((today - new Date(teamLastDate)) / (1000 * 60 * 60 * 24));
-        output.push({ team, unit: '', days });
-      } else if (units.length === 0 && !teamLastDate) {
-        output.push({ team, unit: '', days: 9999 });
+      } else {
+        const key = `${team.trim()}_`;
+        const lastWeighed = lastWeighedMap.get(key);
+        const weighedDays = lastWeighed
+          ? Math.floor((today - new Date(lastWeighed)) / (1000 * 60 * 60 * 24))
+          : 9999;
+        output.push({ team, unit: '', weighedDays });
       }
     }
 
-    // Sắp xếp theo ngày chưa cân giảm dần
-    output.sort((a, b) => b.days - a.days);
+    // 4. Sắp xếp giảm dần theo số ngày chưa cân, lấy top 15
+    const sortedByUnweighed = [...output].sort((a, b) => b.weighedDays - a.weighedDays);
+    const top15Unweighed = sortedByUnweighed.slice(0, 15);
 
-    // ✅ Trả về toàn bộ danh sách, không chỉ top 10
-    return res.json({ longestUnweighed: output });
+    return res.json({
+      top15Unweighed,
+      fullList: sortedByUnweighed,
+    });
+
   } catch (err) {
-    console.error(err);
+    console.error('Lỗi truy vấn:', err);
     res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
   }
 });
