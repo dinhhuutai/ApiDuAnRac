@@ -577,10 +577,7 @@ app.get("/trash-weighings/check", async (req, res) => {
 app.post("/trash-weighings", async (req, res) => {
   const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName } = req.body;
 
-  console.log('weighingTime: ', weighingTime);
-
   const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
-  console.log('nowVN: ', nowVN);
 
   try {
     const pool = await poolPromise;
@@ -590,7 +587,7 @@ app.post("/trash-weighings", async (req, res) => {
       .input("weighingTime", sql.DateTime, nowVN)
       .input("weightKg", sql.Float, weightKg)
       .input("workShift", sql.NVarChar, workShift)
-      .input("updatedAt", sql.DateTime, updatedAt)
+      .input("updatedAt", sql.DateTime, nowVN)
       .input("updatedBy", sql.Int, updatedBy)
       .input("workDate", sql.Date, workDate)
       .input("userName", sql.NVarChar, userName)
@@ -647,6 +644,9 @@ app.put("/trash-weighings/:id", async (req, res) => {
     updatedBy,
   } = req.body;
 
+  
+  const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
+
   try {
     const pool = await poolPromise;
     const result = await pool.request()
@@ -655,7 +655,7 @@ app.put("/trash-weighings/:id", async (req, res) => {
       .input("workShift", sql.NVarChar, workShift)
       .input("workDate", sql.Date, workDate)
       .input("userName", sql.NVarChar, userName)
-      .input("updatedAt", sql.DateTime, updatedAt)
+      .input("updatedAt", sql.DateTime, nowVN)
       .input("updatedBy", sql.Int, updatedBy)
       .query(`
         UPDATE TrashWeighings
@@ -878,6 +878,8 @@ app.post("/user", async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     const now = new Date();
 
+    const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
+
     await pool.request()
       .input("username", sql.NVarChar, username)
       .input("passwordHash", sql.NVarChar, hash)
@@ -886,7 +888,7 @@ app.post("/user", async (req, res) => {
       .input("role", sql.NVarChar, role)
       .input("isActive", sql.Bit, 1)
       .input("createdBy", sql.Int, createdBy)
-      .input("createdAt", sql.DateTime, now)
+      .input("createdAt", sql.DateTime, nowVN)
       .query(`
         INSERT INTO Users (username, passwordHash, fullName, phone, role, isActive, createdBy, createdAt)
         VALUES (@username, @passwordHash, @fullName, @phone, @role, @isActive, @createdBy, @createdAt)
