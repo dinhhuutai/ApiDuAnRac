@@ -579,7 +579,7 @@ app.post("/trash-weighings", async (req, res) => {
 
   console.log('weighingTime: ', weighingTime);
 
-  const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toJSDate();
+  const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
   console.log('nowVN: ', nowVN);
 
   try {
