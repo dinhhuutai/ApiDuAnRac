@@ -587,7 +587,7 @@ app.post("/trash-weighings", async (req, res) => {
     const result = await pool.request()
       .input("trashBinCode", sql.NVarChar, trashBinCode)
       .input("userID", sql.Int, userID)
-      .input("weighingTime", sql.DateTime, weighingTime)
+      .input("weighingTime", sql.DateTime, nowVN)
       .input("weightKg", sql.Float, weightKg)
       .input("workShift", sql.NVarChar, workShift)
       .input("updatedAt", sql.DateTime, updatedAt)
