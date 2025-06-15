@@ -124,7 +124,7 @@ app.delete('/users/delete/:id', async (req, res) => {
 
 app.delete('/history/delete/:id', async (req, res) => {
   const { id } = req.params;
-  console.log('id: ', id);
+
   try {
     const pool = await poolPromise;
 
@@ -576,6 +576,11 @@ app.get("/trash-weighings/check", async (req, res) => {
 app.post("/trash-weighings", async (req, res) => {
   const { trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName } = req.body;
 
+  console.log('weighingTime: ', weighingTime);
+
+  const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toJSDate();
+  console.log('nowVN: ', nowVN);
+
   try {
     const pool = await poolPromise;
     const result = await pool.request()
@@ -705,7 +710,6 @@ app.get("/history/date", async (req, res) => {
         ORDER BY W.weighingTime DESC
       `);
 
-      console.log(result.recordset)
     res.json(result.recordset);
   } catch (err) {
     console.log(err);
@@ -923,17 +927,17 @@ app.get('/api/statistics/today', async (req, res) => {
       .query(`
         -- Tổng lượt cân hôm nay
         SELECT 
-          (SELECT COUNT(*) FROM TrashWeighings WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today) AS totalWeighings,
+          (SELECT COUNT(*) FROM TrashWeighings WHERE CONVERT(date, weighingTime) = @today) AS totalWeighings,
 
         -- Tổng khối lượng rác hôm nay
-          (SELECT SUM(weightKg) FROM TrashWeighings WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today) AS totalWeight,
+          (SELECT SUM(weightKg) FROM TrashWeighings WHERE CONVERT(date, weighingTime) = @today) AS totalWeight,
 
         -- Bộ phận có nhiều rác nhất hôm nay
           (SELECT TOP 1 d.departmentName
            FROM TrashWeighings tw
            JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
            JOIN Departments d ON tb.departmentID = d.departmentID
-           WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+           WHERE CONVERT(date, weighingTime) = @today
            GROUP BY d.departmentName
            ORDER BY SUM(tw.weightKg) DESC) AS mostActiveDepartment,
 
@@ -942,7 +946,7 @@ app.get('/api/statistics/today', async (req, res) => {
            FROM TrashWeighings tw
            JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
            JOIN TrashTypes tt ON tb.trashTypeID = tt.trashTypeID
-           WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+           WHERE CONVERT(date, weighingTime) = @today
            GROUP BY tt.trashName
            ORDER BY SUM(tw.weightKg) DESC) AS mostCommonTrashType,
 
@@ -976,7 +980,7 @@ app.get('/api/statistics/weight-by-department', async (req, res) => {
         FROM TrashWeighings tw
         JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
         JOIN Departments d ON tb.departmentID = d.departmentID
-        WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+        WHERE CONVERT(date, weighingTime) = @today
         GROUP BY d.departmentName
         ORDER BY weight DESC
       `);
@@ -1000,7 +1004,7 @@ app.get('/api/statistics/today-percentage', async (req, res) => {
         WITH TotalToday AS (
           SELECT SUM(weightKg) AS total
           FROM TrashWeighings
-          WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+          WHERE CONVERT(date, weighingTime) = @today
         )
         SELECT 
           tt.trashName AS name,
@@ -1010,7 +1014,7 @@ app.get('/api/statistics/today-percentage', async (req, res) => {
         JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
         JOIN TrashTypes tt ON tb.trashTypeID = tt.trashTypeID
         CROSS JOIN TotalToday ttoday
-        WHERE CONVERT(date, weighingTime AT TIME ZONE 'UTC' AT TIME ZONE 'SE Asia Standard Time') = @today
+        WHERE CONVERT(date, weighingTime) = @today
         GROUP BY tt.trashName, ttoday.total
         ORDER BY percentage DESC
       `);

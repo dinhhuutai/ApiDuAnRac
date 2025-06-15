@@ -17,6 +17,7 @@
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
+    "luxon": "^3.6.1",
     "moment": "^2.30.1",
     "msnodesqlv8": "^4.5.0",
     "mssql": "^11.0.1",
