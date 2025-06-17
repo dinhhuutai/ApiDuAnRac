@@ -644,7 +644,6 @@ app.put("/trash-weighings/:id", async (req, res) => {
     updatedAt,
     updatedBy,
   } = req.body;
-
   
   const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
 
@@ -1251,6 +1250,64 @@ app.get('/trash-bin-in-areas', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Lỗi server' });
+  }
+});
+
+app.post('/submit-classification', async (req, res) => {
+  const { department, unit, trashBins, feedbackNote, user } = req.body;
+  
+  const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toJSDate();
+
+  console.log(nowVN);
+
+  try {
+    const pool = await poolPromise;
+    const transaction = new sql.Transaction(pool);
+
+    await transaction.begin();
+
+    // 1. Insert vào ClassificationChecks
+    const insertCheck = await transaction.request()
+      .input('departmentID', sql.Int, department.id)
+      .input('unitID', sql.Int, unit.id)
+      .input('checkTime', sql.DateTime, nowVN)
+      .input('feedbackNote', sql.NVarChar, feedbackNote || '')
+      .input('userID', sql.Int, user) // thay bằng userID thực tế
+      .query(`
+        INSERT INTO ClassificationChecks (departmentID, unitID, checkTime, feedbackNote, userID)
+        OUTPUT INSERTED.classificationCheckID
+        VALUES (@departmentID, @unitID, @checkTime, @feedbackNote, @userID)
+      `);
+
+    const newCheckID = insertCheck.recordset[0].classificationCheckID;
+
+    // 2. Insert vào InfoClassificationChecks
+    for (const bin of trashBins) {
+      await transaction.request()
+        .input('classificationCheckID', sql.Int, newCheckID)
+        .input('trashBinInAreaCurrentID', sql.Int, bin.TrashBinInAreaCurrentID)
+        .input('quantity', sql.Int, bin.actualQuantity || 0)
+        .input('isCorrectlyClassified', sql.Bit, bin.isCorrect ?? true)
+        .input('createdBy', sql.Int, user)
+        .input('createdAt', sql.DateTime, nowVN)
+        .query(`
+          INSERT INTO InfoClassificationChecks (classificationCheckID, trashBinInAreaCurrentID, quantity, isCorrectlyClassified, createdBy, createdAt)
+          VALUES (@classificationCheckID, @trashBinInAreaCurrentID, @quantity, @isCorrectlyClassified, @createdBy, @createdAt)
+        `);
+    }
+
+    await transaction.commit();
+    res.json({ success: true, message: 'Dữ liệu đã được lưu thành công' });
+  } catch (err) {
+    console.error('Lỗi khi lưu dữ liệu:', err);
+  
+    try {
+      await transaction.rollback(); // rollback nếu lỗi
+    } catch (rollbackError) {
+      console.error('Lỗi khi rollback:', rollbackError);
+    }
+
+    res.status(500).json({ success: false, message: 'Lỗi server khi lưu dữ liệu' });
   }
 });
 
