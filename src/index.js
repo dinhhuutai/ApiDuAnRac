@@ -1272,7 +1272,7 @@ app.post('/submit-classification', async (req, res) => {
       .input('unitID', sql.Int, unit.id)
       .input('checkTime', sql.DateTime, nowVN)
       .input('feedbackNote', sql.NVarChar, feedbackNote || '')
-      .input('userID', sql.Int, user) // thay bằng userID thực tế
+      .input('userID', sql.Int, user)
       .query(`
         INSERT INTO ClassificationChecks (departmentID, unitID, checkTime, feedbackNote, userID)
         OUTPUT INSERTED.classificationCheckID
