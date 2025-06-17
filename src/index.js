@@ -17,6 +17,7 @@ app.use(cors({
   origin: [
     'https://ashy-mud-0ac3ad21e.6.azurestaticapps.net',
     'http://localhost:3000',
+    'https://noibo.thuanhunglongan.com',
   ],
   credentials: true
 }));
@@ -1184,6 +1185,72 @@ app.delete('/api/team-members/:id', async (req, res) => {
   } catch (err) {
     console.error('Delete error:', err);
     res.status(500).send(err.message);
+  }
+});
+
+// GET /api/departments
+app.get('/api/departments', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT departmentID, departmentName FROM Departments WHERE areaName = N'Sản xuất'
+    `);
+    res.json(result.recordset);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/units?departmentId=1
+app.get('/api/units', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const departmentId = req.query.departmentId;
+    const query = departmentId
+      ? `SELECT unitID, unitName, departmentId FROM Units WHERE departmentId = @departmentId`
+      : `SELECT unitID, unitName, departmentId FROM Units`;
+
+    const request = pool.request();
+    if (departmentId) request.input('departmentId', sql.Int, departmentId);
+
+    const result = await request.query(query);
+    res.json(result.recordset);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/trash-bin-in-areas?departmentID=1&unitID=2
+app.get('/trash-bin-in-areas', async (req, res) => {
+  const { departmentID, unitID } = req.query;
+
+  try {
+    const pool = await poolPromise;
+
+    const result = await pool.request()
+      .input('departmentID', sql.Int, departmentID)
+      .input('unitID', sql.Int, unitID || null)
+      .query(`
+        SELECT 
+          a.trashBinInAreaID,
+          b.TrashBinInAreaCurrentID,
+          a.trashType,
+          a.trashName,
+          a.quantity AS expectedQuantity,
+          ISNULL(b.quantity, 0) AS actualQuantity
+        FROM TrashBinInAreas a
+        LEFT JOIN TrashBinInAreaCurrents b 
+          ON a.departmentID = b.departmentID 
+          AND ((a.unitID IS NULL AND b.unitID IS NULL) OR a.unitID = b.unitID)
+          AND a.trashType = b.trashType
+          AND a.trashName = b.trashName
+        WHERE a.departmentID = @departmentID AND (a.unitID = @unitID OR @unitID IS NULL)
+      `);
+
+    res.json(result.recordset);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Lỗi server' });
   }
 });
 
