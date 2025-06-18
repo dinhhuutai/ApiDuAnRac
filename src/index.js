@@ -1519,6 +1519,6 @@ app.get('/api/bin-standard', async (req, res) => {
 });
 
 
-app.listen(port, () => {
+app.listen(port, '0.0.0.0', () => {
   console.log(`🚀 Server đang chạy tại http://localhost:${port}`);
 });
