@@ -1200,11 +1200,27 @@ app.get('/departments', async (req, res) => {
 
 // GET /api/departments
 app.get('/api/departments', async (req, res) => {
+  const { date } = req.query;
+  if (!date) {
+    return res.status(400).json({ error: 'Thiếu tham số date' });
+  }
+
   try {
     const pool = await poolPromise;
-    const result = await pool.request().query(`
-      SELECT departmentID, departmentName FROM Departments WHERE areaName = N'Sản xuất'
-    `);
+    const result = await pool.request()
+      .input('date', sql.Date, date)
+      .query(`
+        SELECT DISTINCT d.departmentID, d.departmentName
+        FROM Departments d
+        LEFT JOIN Units u ON d.departmentID = u.departmentID
+        LEFT JOIN ClassificationChecks c ON (
+          c.departmentID = d.departmentID 
+          AND (c.unitID = u.unitID OR (c.unitID IS NULL AND u.unitID IS NULL))
+          AND CAST(c.checkTime AS DATE) = @date
+        )
+        WHERE d.areaName = N'Sản xuất'
+          AND c.classificationCheckID IS NULL
+      `);
     res.json(result.recordset);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1213,18 +1229,33 @@ app.get('/api/departments', async (req, res) => {
 
 // GET /api/units?departmentId=1
 app.get('/api/units', async (req, res) => {
+  const { departmentId, date } = req.query;
+
+  if (!departmentId || !date) {
+    return res.status(400).json({ error: 'Thiếu departmentId hoặc date' });
+  }
+
   try {
     const pool = await poolPromise;
-    const query = `SELECT unitID, unitName, departmentId FROM Units`;
+    const result = await pool.request()
+      .input('departmentId', sql.Int, departmentId)
+      .input('date', sql.Date, date)
+      .query(`
+        SELECT u.unitID, u.unitName, u.departmentID
+        FROM Units u
+        LEFT JOIN ClassificationChecks c ON (
+          u.unitID = c.unitID AND CAST(c.checkTime AS DATE) = @date
+        )
+        WHERE u.departmentID = @departmentID
+          AND c.classificationCheckID IS NULL
+      `);
 
-    const request = pool.request();
-
-    const result = await request.query(query);
     res.json(result.recordset);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // GET /api/trash-bin-in-areas?departmentID=1&unitID=2
 app.get('/trash-bin-in-areas', async (req, res) => {
@@ -1301,18 +1332,18 @@ app.post('/submit-classification', async (req, res) => {
         `);
 
           // 👉 Cập nhật quantity mới cho bảng TrashBinInAreaCurrents
-      // await transaction.request()
-      //   .input('trashBinInAreaCurrentID', sql.Int, bin.TrashBinInAreaCurrentID)
-      //   .input('quantity', sql.Int, bin.actualQuantity || 0)
-      //   .input('updatedBy', sql.Int, user)
-      //   .input('updatedAt', sql.DateTime, nowVN)
-      //   .query(`
-      //     UPDATE TrashBinInAreaCurrents
-      //     SET quantity = @quantity,
-      //         updatedBy = @updatedBy,
-      //         updatedAt = @updatedAt
-      //     WHERE trashBinInAreaCurrentID = @trashBinInAreaCurrentID
-      //   `);
+      await transaction.request()
+        .input('trashBinInAreaCurrentID', sql.Int, bin.TrashBinInAreaCurrentID)
+        .input('quantity', sql.Int, bin.actualQuantity || 0)
+        .input('updatedBy', sql.Int, user)
+        .input('updatedAt', sql.DateTime, nowVN)
+        .query(`
+          UPDATE TrashBinInAreaCurrents
+          SET quantity = @quantity,
+              updatedBy = @updatedBy,
+              updatedAt = @updatedAt
+          WHERE trashBinInAreaCurrentID = @trashBinInAreaCurrentID
+        `);
     }
 
     await transaction.commit();
@@ -1431,7 +1462,61 @@ app.delete('/classification-history/:id', async (req, res) => {
   }
 });
 
+// GET /api/bin-summary
+app.get('/api/bin-summary', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT 
+        d.departmentName AS departmentName,
+        ISNULL(u.unitName, N'') AS unitName,
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%giẻ lau%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%vụn logo%' THEN t.quantity ELSE 0 END) AS [Vụn logo],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%keo%' THEN t.quantity ELSE 0 END) AS [Băng keo dính hóa chất],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải thường%' THEN t.quantity ELSE 0 END) AS [Mực in thải thường],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải lapa%' THEN t.quantity ELSE 0 END) AS [Mực in thải lapa],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%sinh hoạt%' THEN t.quantity ELSE 0 END) AS [Rác sinh hoạt],
+        SUM(t.quantity) AS totalQuantity
+      FROM TrashBinInAreas t
+      LEFT JOIN Departments d ON t.departmentID = d.departmentID
+      LEFT JOIN Units u ON t.unitID = u.unitID
+      GROUP BY d.departmentName, u.unitName
+      ORDER BY d.departmentName, u.unitName;
+    `);
 
+    res.json(result.recordset);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/bin-standard
+app.get('/api/bin-standard', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT 
+        d.departmentName AS departmentName,
+        ISNULL(u.unitName, N'') AS unitName,
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%giẻ lau%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%vụn logo%' THEN t.quantity ELSE 0 END) AS [Vụn logo],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%keo%' THEN t.quantity ELSE 0 END) AS [Băng keo dính hóa chất],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải thường%' THEN t.quantity ELSE 0 END) AS [Mực in thải thường],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải lapa%' THEN t.quantity ELSE 0 END) AS [Mực in thải lapa],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%sinh hoạt%' THEN t.quantity ELSE 0 END) AS [Rác sinh hoạt],
+        SUM(t.quantity) AS totalQuantity
+      FROM TrashBinInAreaCurrents t
+      LEFT JOIN Departments d ON t.departmentID = d.departmentID
+      LEFT JOIN Units u ON t.unitID = u.unitID
+      GROUP BY d.departmentName, u.unitName
+      ORDER BY d.departmentName, u.unitName;
+    `);
+
+    res.json(result.recordset);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 app.listen(port, () => {
