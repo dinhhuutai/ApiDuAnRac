@@ -1207,7 +1207,7 @@ app.get('/api/units', async (req, res) => {
     const query = `SELECT unitID, unitName, departmentId FROM Units`;
 
     const request = pool.request();
-    
+
     const result = await request.query(query);
     res.json(result.recordset);
   } catch (err) {
@@ -1306,6 +1306,100 @@ app.post('/submit-classification', async (req, res) => {
     res.status(500).json({ success: false, message: 'Lỗi server khi lưu dữ liệu' });
   }
 });
+
+// GET /classification-history?date=YYYY-MM-DD
+app.get('/classification-history', async (req, res) => {
+  const { date } = req.query;
+
+  if (!date) {
+    return res.status(400).json({ success: false, message: 'Thiếu tham số ngày (date)' });
+  }
+
+  try {
+    const pool = await poolPromise;
+
+    const result = await pool.request()
+      .input('date', sql.Date, date)
+      .query(`
+        SELECT 
+          c.classificationCheckID,
+          c.checkTime,
+          c.feedbackNote,
+          d.departmentName,
+          u.unitName,
+          us.fullName AS userName,
+          i.trashBinInAreaCurrentID,
+          i.quantity,
+          i.isCorrectlyClassified,
+          i.createdAt,
+          t.trashName,
+          t.quantity as ruleQuantity
+        FROM ClassificationChecks c
+        INNER JOIN Departments d ON c.departmentID = d.departmentID
+        LEFT JOIN Units u ON c.unitID = u.unitID
+        INNER JOIN Users us ON c.userID = us.userID
+        LEFT JOIN InfoClassificationChecks i ON c.classificationCheckID = i.classificationCheckID
+        LEFT JOIN TrashBinInAreas t ON i.trashBinInAreaCurrentID = t.trashBinInAreaID
+        WHERE CAST(c.checkTime AS DATE) = @date
+        ORDER BY c.checkTime DESC, i.createdAt ASC
+      `);
+
+    const grouped = {};
+
+    result.recordset.forEach(row => {
+      const id = row.classificationCheckID;
+
+      if (!grouped[id]) {
+        grouped[id] = {
+          checkID: id,
+          departmentName: row.departmentName,
+          unitName: row.unitName,
+          checkTime: row.checkTime,
+          feedbackNote: row.feedbackNote,
+          userName: row.userName,
+          details: []
+        };
+      }
+
+      // Có thể có dòng null ở LEFT JOIN nếu không có detail
+      if (row.trashBinInAreaCurrentID !== null) {
+        grouped[id].details.push({
+          trashBinInAreaCurrentID: row.trashBinInAreaCurrentID,
+          quantity: row.quantity,
+          isCorrectlyClassified: row.isCorrectlyClassified,
+          createdAt: row.createdAt,
+          trashName: row.trashName,
+          ruleQuantity: row.ruleQuantity,
+        });
+      }
+    });
+
+    res.json({ success: true, data: Object.values(grouped) });
+  } catch (err) {
+    console.error('Lỗi lấy lịch sử phân loại:', err);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+});
+
+app.delete('/classification-history/:id', async (req, res) => {
+  const { id } = req.params;
+  const pool = await poolPromise;
+  try {
+    await pool.request()
+      .input('id', sql.Int, id)
+      .query('DELETE FROM InfoClassificationChecks WHERE classificationCheckID = @id');
+
+    await pool.request()
+      .input('id', sql.Int, id)
+      .query('DELETE FROM ClassificationChecks WHERE classificationCheckID = @id');
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Không thể xoá' });
+  }
+});
+
 
 
 
