@@ -18,6 +18,7 @@ app.use(cors({
     'https://ashy-mud-0ac3ad21e.6.azurestaticapps.net',
     'http://localhost:3000',
     'https://noibo.thuanhunglongan.com',
+    'https://dashboardduanrac.netlify.app',
   ],
   credentials: true
 }));
