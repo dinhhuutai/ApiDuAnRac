@@ -1301,18 +1301,18 @@ app.post('/submit-classification', async (req, res) => {
         `);
 
           // 👉 Cập nhật quantity mới cho bảng TrashBinInAreaCurrents
-      await transaction.request()
-        .input('trashBinInAreaCurrentID', sql.Int, bin.TrashBinInAreaCurrentID)
-        .input('quantity', sql.Int, bin.actualQuantity || 0)
-        .input('updatedBy', sql.Int, user)
-        .input('updatedAt', sql.DateTime, nowVN)
-        .query(`
-          UPDATE TrashBinInAreaCurrents
-          SET quantity = @quantity,
-              updatedBy = @updatedBy,
-              updatedAt = @updatedAt
-          WHERE trashBinInAreaCurrentID = @trashBinInAreaCurrentID
-        `);
+      // await transaction.request()
+      //   .input('trashBinInAreaCurrentID', sql.Int, bin.TrashBinInAreaCurrentID)
+      //   .input('quantity', sql.Int, bin.actualQuantity || 0)
+      //   .input('updatedBy', sql.Int, user)
+      //   .input('updatedAt', sql.DateTime, nowVN)
+      //   .query(`
+      //     UPDATE TrashBinInAreaCurrents
+      //     SET quantity = @quantity,
+      //         updatedBy = @updatedBy,
+      //         updatedAt = @updatedAt
+      //     WHERE trashBinInAreaCurrentID = @trashBinInAreaCurrentID
+      //   `);
     }
 
     await transaction.commit();
