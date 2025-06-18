@@ -1204,14 +1204,10 @@ app.get('/api/departments', async (req, res) => {
 app.get('/api/units', async (req, res) => {
   try {
     const pool = await poolPromise;
-    const departmentId = req.query.departmentId;
-    const query = departmentId
-      ? `SELECT unitID, unitName, departmentId FROM Units WHERE departmentId = @departmentId`
-      : `SELECT unitID, unitName, departmentId FROM Units`;
+    const query = `SELECT unitID, unitName, departmentId FROM Units`;
 
     const request = pool.request();
-    if (departmentId) request.input('departmentId', sql.Int, departmentId);
-
+    
     const result = await request.query(query);
     res.json(result.recordset);
   } catch (err) {
