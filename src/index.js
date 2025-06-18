@@ -1187,6 +1187,17 @@ app.delete('/api/team-members/:id', async (req, res) => {
   }
 });
 
+app.get('/departments', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.query(`SELECT departmentID, departmentName FROM Departments WHERE areaName = N'Sản xuất'`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('Lỗi khi lấy danh sách bộ phận:', err);
+    res.status(500).json({ error: 'Không thể lấy danh sách bộ phận' });
+  }
+});
+
 // GET /api/departments
 app.get('/api/departments', async (req, res) => {
   try {
@@ -1254,8 +1265,6 @@ app.post('/submit-classification', async (req, res) => {
   
   const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
 
-  console.log(nowVN);
-
   try {
     const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
@@ -1290,6 +1299,20 @@ app.post('/submit-classification', async (req, res) => {
           INSERT INTO InfoClassificationChecks (classificationCheckID, trashBinInAreaCurrentID, quantity, isCorrectlyClassified, createdBy, createdAt)
           VALUES (@classificationCheckID, @trashBinInAreaCurrentID, @quantity, @isCorrectlyClassified, @createdBy, @createdAt)
         `);
+
+          // 👉 Cập nhật quantity mới cho bảng TrashBinInAreaCurrents
+      await transaction.request()
+        .input('trashBinInAreaCurrentID', sql.Int, bin.TrashBinInAreaCurrentID)
+        .input('quantity', sql.Int, bin.actualQuantity || 0)
+        .input('updatedBy', sql.Int, user)
+        .input('updatedAt', sql.DateTime, nowVN)
+        .query(`
+          UPDATE TrashBinInAreaCurrents
+          SET quantity = @quantity,
+              updatedBy = @updatedBy,
+              updatedAt = @updatedAt
+          WHERE trashBinInAreaCurrentID = @trashBinInAreaCurrentID
+        `);
     }
 
     await transaction.commit();
@@ -1307,9 +1330,10 @@ app.post('/submit-classification', async (req, res) => {
   }
 });
 
-// GET /classification-history?date=YYYY-MM-DD
+
+// GET /classification-history?date=YYYY-MM-DD&departmentId=1
 app.get('/classification-history', async (req, res) => {
-  const { date } = req.query;
+  const { date, departmentId } = req.query;
 
   if (!date) {
     return res.status(400).json({ success: false, message: 'Thiếu tham số ngày (date)' });
@@ -1318,37 +1342,46 @@ app.get('/classification-history', async (req, res) => {
   try {
     const pool = await poolPromise;
 
-    const result = await pool.request()
-      .input('date', sql.Date, date)
-      .query(`
-        SELECT 
-          c.classificationCheckID,
-          c.checkTime,
-          c.feedbackNote,
-          d.departmentName,
-          u.unitName,
-          us.fullName AS userName,
-          i.trashBinInAreaCurrentID,
-          i.quantity,
-          i.isCorrectlyClassified,
-          i.createdAt,
-          t.trashName,
-          t.quantity as ruleQuantity
-        FROM ClassificationChecks c
-        INNER JOIN Departments d ON c.departmentID = d.departmentID
-        LEFT JOIN Units u ON c.unitID = u.unitID
-        INNER JOIN Users us ON c.userID = us.userID
-        LEFT JOIN InfoClassificationChecks i ON c.classificationCheckID = i.classificationCheckID
-        LEFT JOIN TrashBinInAreas t ON i.trashBinInAreaCurrentID = t.trashBinInAreaID
-        WHERE CAST(c.checkTime AS DATE) = @date
-        ORDER BY c.checkTime DESC, i.createdAt ASC
-      `);
+    let query = `
+      SELECT 
+        c.classificationCheckID,
+        c.checkTime,
+        c.feedbackNote,
+        d.departmentName,
+        u.unitName,
+        us.fullName AS userName,
+        i.trashBinInAreaCurrentID,
+        i.quantity,
+        i.isCorrectlyClassified,
+        i.createdAt,
+        t.trashName,
+        t.quantity as ruleQuantity
+      FROM ClassificationChecks c
+      INNER JOIN Departments d ON c.departmentID = d.departmentID
+      LEFT JOIN Units u ON c.unitID = u.unitID
+      INNER JOIN Users us ON c.userID = us.userID
+      LEFT JOIN InfoClassificationChecks i ON c.classificationCheckID = i.classificationCheckID
+      LEFT JOIN TrashBinInAreas t ON i.trashBinInAreaCurrentID = t.trashBinInAreaID
+      WHERE CAST(c.checkTime AS DATE) = @date
+    `;
 
+    if (departmentId) {
+      query += ' AND c.departmentID = @departmentId';
+    }
+
+    query += ' ORDER BY c.checkTime DESC, i.createdAt ASC';
+
+    const request = pool.request().input('date', sql.Date, date);
+    if (departmentId) {
+      request.input('departmentId', sql.Int, departmentId);
+    }
+
+    const result = await request.query(query);
+
+    // Gom nhóm dữ liệu
     const grouped = {};
-
     result.recordset.forEach(row => {
       const id = row.classificationCheckID;
-
       if (!grouped[id]) {
         grouped[id] = {
           checkID: id,
@@ -1360,8 +1393,6 @@ app.get('/classification-history', async (req, res) => {
           details: []
         };
       }
-
-      // Có thể có dòng null ở LEFT JOIN nếu không có detail
       if (row.trashBinInAreaCurrentID !== null) {
         grouped[id].details.push({
           trashBinInAreaCurrentID: row.trashBinInAreaCurrentID,
