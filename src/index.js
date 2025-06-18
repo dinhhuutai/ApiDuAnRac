@@ -1256,7 +1256,7 @@ app.get('/trash-bin-in-areas', async (req, res) => {
 app.post('/submit-classification', async (req, res) => {
   const { department, unit, trashBins, feedbackNote, user } = req.body;
   
-  const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');;
+  const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
 
   console.log(nowVN);
 
