@@ -1035,6 +1035,7 @@ const TRASH_NAMES = [
     'Băng keo dính mực',
     'Keo bàn thải',
     'Mực in thải',
+    'Mực in thải lapa',
     'Vụn logo',
     'Lụa căng khung',
     'Rác sinh hoạt'
