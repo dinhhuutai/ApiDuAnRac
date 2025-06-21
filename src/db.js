@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+
 const sql = require("mssql");
 
 const config = {
@@ -9,6 +11,9 @@ const config = {
   options: {
     encrypt: process.env.SQL_ENCRYPT === 'true',
     trustServerCertificate: false,
+    cryptoCredentialsDetails: {
+      ca: fs.readFileSync('./src/global-bundle.pem')
+    }
   }
 };
 
