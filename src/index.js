@@ -15,11 +15,11 @@ app.use(express.json());
 
 app.use(cors({
   origin: [
+    'https://ashy-mud-0ac3ad21e.6.azurestaticapps.net',
     'http://localhost:3000',
     'https://noibo.thuanhunglongan.com',
     'https://noibo.thuanhunglongan.com/login',
-    'https://master.d3q09n8s04589q.amplifyapp.com',
-    'https://master.d3q09n8s04589q.amplifyapp.com/login',
+    'https://dashboardduanrac.netlify.app',
   ],
   credentials: true
 }));
