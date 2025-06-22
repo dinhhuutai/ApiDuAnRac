@@ -39,8 +39,14 @@ app.post('/api/scale/data', (req, res) => {
   res.json(req.body);
 });
 app.get('/api/scale/data', (req, res) => {
+  try {
+    
   console.log("Client GET /api/scale/data");
   res.status(200).json({ data: scaleData });
+  } catch (error) {
+    console.error("❌ Lỗi khi truy vấn:", err);
+    res.status(500).send("Lỗi server");
+  }
 });
 
 
