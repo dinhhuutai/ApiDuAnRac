@@ -40,7 +40,7 @@ app.post('/api/scale/data', (req, res) => {
 });
 app.get('/api/scale/data', (req, res) => {
 
-    res.status(200).json(scaleData);
+    res.status(200).json({ data: scaleData });
 });
 
 
