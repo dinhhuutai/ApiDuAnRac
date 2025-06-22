@@ -36,7 +36,7 @@ app.post('/api/scale/data', (req, res) => {
 
   scaleData = req.body;
 
-  res.json(req.body);
+  res.json({ data: '123' });
 });
 app.get('/api/scale/data', (req, res) => {
   try {
