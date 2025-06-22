@@ -39,9 +39,10 @@ app.post('/api/scale/data', (req, res) => {
   res.json(req.body);
 });
 app.get('/api/scale/data', (req, res) => {
-
-    res.status(200).json({ data: scaleData });
+  console.log("Client GET /api/scale/data");
+  res.status(200).json({ data: scaleData });
 });
+
 
 
 app.get("/users/get", async (req, res) => {
