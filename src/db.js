@@ -10,7 +10,7 @@ const config = {
   database: process.env.SQL_DATABASE,
   options: {
     encrypt: process.env.SQL_ENCRYPT === 'true',
-    trustServerCertificate: false,
+    trustServerCertificate: true,
     cryptoCredentialsDetails: {
       ca: fs.readFileSync('./src/global-bundle.pem')
     }
