@@ -33,7 +33,7 @@ app.post('/api/scale/data', (req, res) => {
   console.log("Dữ liệu nhận được từ ESP32:");
   console.log(req.body); // In ra JSON
 
-  res.json({ message: 'Đã nhận JSON thành công!', data: req.body });
+    res.json(result.body);
 });
 
 
