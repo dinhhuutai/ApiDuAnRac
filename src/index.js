@@ -28,12 +28,19 @@ app.get('/', (req, res) => {
   res.status(200).send('API is running');
 });
 
+let scaleData = 'Không nhận được dữ liệu từ cân';
 
 app.post('/api/scale/data', (req, res) => {
   console.log("Dữ liệu nhận được từ ESP32:");
   console.log(req.body); // In ra JSON
 
-    res.json(result.body);
+  scaleData = req.body;
+
+  res.json(req.body);
+});
+app.get('/api/scale/data', (req, res) => {
+
+    res.json(scaleData);
 });
 
 
