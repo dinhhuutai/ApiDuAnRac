@@ -8,7 +8,7 @@ phases:
       - npm install
   build:
     commands:
-      - npm run build || echo "No build step needed"
+      - zip -r build-output.zip .
 artifacts:
   files:
-    - '**/*'
+    - build-output.zip
