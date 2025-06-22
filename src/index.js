@@ -9,7 +9,7 @@ const jwt = require("jsonwebtoken");
 const SECRET = "Tai31072002@";
 
 const app = express();
-const port = process.env.PORT || 5000
+const port = process.env.PORT || 5000;
 
 app.use(express.json());
 
@@ -23,6 +23,10 @@ app.use(cors({
   ],
   credentials: true
 }));
+
+app.get('/', (req, res) => {
+  res.status(200).send('API is running');
+});
 
 
 app.post('/api/scale/data', (req, res) => {
