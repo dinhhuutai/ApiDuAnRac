@@ -9,7 +9,7 @@ const jwt = require("jsonwebtoken");
 const SECRET = "Tai31072002@";
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 5000
 
 app.use(express.json());
 
