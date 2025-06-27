@@ -6,6 +6,7 @@ const { DateTime } = require('luxon');
 
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const { apiInkWeighing } = require('./InkWeighing/api');
 const SECRET = "Tai31072002@";
 
 const app = express();
@@ -28,28 +29,7 @@ app.get('/', (req, res) => {
   res.status(200).send('API is running');
 });
 
-let scaleData = 'Không nhận được dữ liệu từ cân';
-
-app.post('/api/scale/data', (req, res) => {
-  console.log("Dữ liệu nhận được từ ESP32:");
-  console.log(req.body); // In ra JSON
-
-  scaleData = req.body;
-
-  res.json({ data: '123' });
-});
-app.get('/api/scale/data', (req, res) => {
-  try {
-    
-  console.log("Client GET /api/scale/data");
-  res.status(200).json({ data: scaleData });
-  } catch (error) {
-    console.error("❌ Lỗi khi truy vấn:", err);
-    res.status(500).send("Lỗi server");
-  }
-});
-
-
+apiInkWeighing(app);
 
 app.get("/users/get", async (req, res) => {
   try {
@@ -600,6 +580,7 @@ app.post("/trash-weighings", async (req, res) => {
 
   const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
 
+  console.log({ trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName })
   try {
     const pool = await poolPromise;
     const result = await pool.request()
@@ -1342,14 +1323,15 @@ app.post('/submit-classification', async (req, res) => {
     for (const bin of trashBins) {
       await transaction.request()
         .input('classificationCheckID', sql.Int, newCheckID)
+        .input('trashBinInAreaID', sql.Int, bin.trashBinInAreaID)
         .input('trashBinInAreaCurrentID', sql.Int, bin.TrashBinInAreaCurrentID)
         .input('quantity', sql.Int, bin.actualQuantity || 0)
         .input('isCorrectlyClassified', sql.Bit, bin.isCorrect ?? true)
         .input('createdBy', sql.Int, user)
         .input('createdAt', sql.DateTime, nowVN)
         .query(`
-          INSERT INTO InfoClassificationChecks (classificationCheckID, trashBinInAreaCurrentID, quantity, isCorrectlyClassified, createdBy, createdAt)
-          VALUES (@classificationCheckID, @trashBinInAreaCurrentID, @quantity, @isCorrectlyClassified, @createdBy, @createdAt)
+          INSERT INTO InfoClassificationChecks (classificationCheckID, trashBinInAreaID, trashBinInAreaCurrentID, quantity, isCorrectlyClassified, createdBy, createdAt)
+          VALUES (@classificationCheckID, @trashBinInAreaID, @trashBinInAreaCurrentID, @quantity, @isCorrectlyClassified, @createdBy, @createdAt)
         `);
 
           // 👉 Cập nhật quantity mới cho bảng TrashBinInAreaCurrents
@@ -1371,12 +1353,6 @@ app.post('/submit-classification', async (req, res) => {
     res.json({ success: true, message: 'Dữ liệu đã được lưu thành công' });
   } catch (err) {
     console.error('Lỗi khi lưu dữ liệu:', err);
-  
-    try {
-      await transaction.rollback(); // rollback nếu lỗi
-    } catch (rollbackError) {
-      console.error('Lỗi khi rollback:', rollbackError);
-    }
 
     res.status(500).json({ success: false, message: 'Lỗi server khi lưu dữ liệu' });
   }
@@ -1413,7 +1389,7 @@ app.get('/classification-history', async (req, res) => {
       LEFT JOIN Units u ON c.unitID = u.unitID
       INNER JOIN Users us ON c.userID = us.userID
       LEFT JOIN InfoClassificationChecks i ON c.classificationCheckID = i.classificationCheckID
-      LEFT JOIN TrashBinInAreas t ON i.trashBinInAreaCurrentID = t.trashBinInAreaID
+      LEFT JOIN TrashBinInAreas t ON i.trashBinInAreaID = t.trashBinInAreaID
       WHERE CAST(c.checkTime AS DATE) = @date
     `;
 
@@ -1491,12 +1467,12 @@ app.get('/api/bin-summary', async (req, res) => {
       SELECT 
         d.departmentName AS departmentName,
         ISNULL(u.unitName, N'') AS unitName,
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%giẻ lau%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%dính mực thường%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực thường],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%dính mực lapa%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực lapa],
         SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%vụn logo%' THEN t.quantity ELSE 0 END) AS [Vụn logo],
         SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%keo%' THEN t.quantity ELSE 0 END) AS [Băng keo dính hóa chất],
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải thường%' THEN t.quantity ELSE 0 END) AS [Mực in thải thường],
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải lapa%' THEN t.quantity ELSE 0 END) AS [Mực in thải lapa],
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%sinh hoạt%' THEN t.quantity ELSE 0 END) AS [Rác sinh hoạt],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thường thải%' THEN t.quantity ELSE 0 END) AS [Mực in thường thải],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%lapa thải%' THEN t.quantity ELSE 0 END) AS [Mực in lapa thải],
         SUM(t.quantity) AS totalQuantity
       FROM TrashBinInAreas t
       LEFT JOIN Departments d ON t.departmentID = d.departmentID
@@ -1519,12 +1495,12 @@ app.get('/api/bin-standard', async (req, res) => {
       SELECT 
         d.departmentName AS departmentName,
         ISNULL(u.unitName, N'') AS unitName,
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%giẻ lau%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%dính mực thường%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực thường],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%dính mực lapa%' THEN t.quantity ELSE 0 END) AS [Giẻ lau dính mực lapa],
         SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%vụn logo%' THEN t.quantity ELSE 0 END) AS [Vụn logo],
         SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%keo%' THEN t.quantity ELSE 0 END) AS [Băng keo dính hóa chất],
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải thường%' THEN t.quantity ELSE 0 END) AS [Mực in thải thường],
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thải lapa%' THEN t.quantity ELSE 0 END) AS [Mực in thải lapa],
-        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%sinh hoạt%' THEN t.quantity ELSE 0 END) AS [Rác sinh hoạt],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%thường thải%' THEN t.quantity ELSE 0 END) AS [Mực in thường thải],
+        SUM(CASE WHEN t.trashName COLLATE Vietnamese_CI_AI LIKE N'%lapa thải%' THEN t.quantity ELSE 0 END) AS [Mực in lapa thải],
         SUM(t.quantity) AS totalQuantity
       FROM TrashBinInAreaCurrents t
       LEFT JOIN Departments d ON t.departmentID = d.departmentID
@@ -1535,6 +1511,7 @@ app.get('/api/bin-standard', async (req, res) => {
 
     res.json(result.recordset);
   } catch (err) {
+    console.log(err)
     res.status(500).json({ error: err.message });
   }
 });

@@ -11,7 +11,8 @@ const config = {
   options: {
     encrypt: process.env.SQL_ENCRYPT === 'true',
     trustServerCertificate: true,
-  }
+  },
+  requestTimeout: 120000
 };
 
 const poolPromise = new sql.ConnectionPool(config)
