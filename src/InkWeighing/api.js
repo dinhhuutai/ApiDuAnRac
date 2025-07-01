@@ -21,6 +21,7 @@ const formatTimeStr = (str) => {
   if (parts.length === 2) return str + ':00'; // Thêm giây nếu thiếu
   return str;
 };
+
 const parseTimeToDateObject = (timeStr) => {
   const [h, m, s] = timeStr.split(':').map(Number);
   const d = new Date();
@@ -179,6 +180,7 @@ function apiInkWeighing(app) {
                 shift,
                 department,
                 unit,
+                operation,
                 page = 1,
                 pageSize = 10,
             } = req.query;
@@ -191,11 +193,13 @@ function apiInkWeighing(app) {
             const safeShift = shift?.trim() || null;
             const safeDepartment = department?.trim() || null;
             const safeUnit = unit?.trim() || null;
+            const safeOperation = operation?.trim() || null;
 
             request.input('date', sql.Date, safeDate);
             request.input('shift', sql.NVarChar, safeShift);
             request.input('department', sql.VarChar, safeDepartment);
             request.input('unit', sql.VarChar, safeUnit);
+            request.input('operation', sql.VarChar, safeOperation);
 
             const offset = (page - 1) * pageSize;
 
@@ -207,7 +211,8 @@ function apiInkWeighing(app) {
                     (@date IS NULL OR weighStartDate = @date) AND
                     (@shift IS NULL OR workShift = @shift) AND
                     (@department IS NULL OR department = @department) AND
-                    (@unit IS NULL OR unit = @unit)
+                    (@unit IS NULL OR unit = @unit) AND
+                    (@operation IS NULL OR operation = @operation)
             `);
             const total = countResult.recordset[0].total;
             const totalPages = Math.ceil(total / pageSize);
@@ -223,7 +228,8 @@ function apiInkWeighing(app) {
                         (@date IS NULL OR weighStartDate = @date) AND
                         (@shift IS NULL OR workShift = @shift) AND
                         (@department IS NULL OR department = @department) AND
-                        (@unit IS NULL OR unit = @unit)
+                        (@unit IS NULL OR unit = @unit) AND
+                        (@operation IS NULL OR operation = @operation)
                 ) AS paged
                 WHERE row_num BETWEEN ${offset + 1} AND ${offset + Number(pageSize)}
             `);

@@ -7,12 +7,14 @@ const { DateTime } = require('luxon');
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { apiInkWeighing } = require('./InkWeighing/api');
+const { apiFeedback } = require('./Feedback/api');
 const SECRET = "Tai31072002@";
 
 const app = express();
 const port = process.env.PORT || 5000;
 
 app.use(express.json());
+app.use('/uploads', express.static('uploads'));
 
 app.use(cors({
   origin: [
@@ -30,6 +32,7 @@ app.get('/', (req, res) => {
 });
 
 apiInkWeighing(app);
+apiFeedback(app);
 
 app.get("/users/get", async (req, res) => {
   try {
@@ -154,9 +157,9 @@ const teamUnitMap = {
   'Tổ canh hàng': ['Chuyền 1A'],
   'Tổ bổ sung': ['Chuyền 1B', 'Chuyền 2A-2B'],
   'Tổ mẫu': ['Chuyền 3A-3B'],
-  'Tổ 3': ['Chuyền 1', 'Chuyền 2', 'Chuyền 3', 'Chuyền 4', 'Chuyền 5', 'Chuyền 6', 'Chuyền 7', 'Chuyền 8', 'Rác thải chung'],
-  'Tổ 4': ['Chuyền 4A-4B', 'Chuyền 5A-5B', 'Chuyền 6A-6B', 'Chuyền 7A-7B', 'Chuyền 8A-8B', 'Chuyền 9A-9B', 'Chuyền 10A', 'Chuyền 11A', 'Chuyền 12A', 'Chuyền 13A', 'Chuyền 14A', 'Chuyền RB1', 'Chuyền RB2', 'Chuyền RB3', 'Rác thải chung'],
-  'Tổ 5': ['Chuyền 10B', 'Chuyền 11B', 'Chuyền 12B', 'Chuyền 13B', 'Chuyền 14B', 'Rác thải chung'],
+  'Tổ 3': ['Chuyền 1', 'Chuyền 2', 'Chuyền 3', 'Chuyền 4', 'Chuyền 5', 'Chuyền 6', 'Chuyền 7', 'Chuyền 8', 'Rác thải chung'],
+  'Tổ 4': ['Chuyền 4A-4B', 'Chuyền 5A-5B', 'Chuyền 6A-6B', 'Chuyền 7A-7B', 'Chuyền 8A-8B', 'Chuyền 9A-9B', 'Chuyền 10A', 'Chuyền 11A', 'Chuyền 12A', 'Chuyền 13A', 'Chuyền 14A', 'Chuyền RB1', 'Chuyền RB2', 'Chuyền RB3', 'Rác thải chung'],
+  'Tổ 5': ['Chuyền 10B', 'Chuyền 11B', 'Chuyền 12B', 'Chuyền 13B', 'Chuyền 14B', 'Rác thải chung'],
   'Tổ sửa hàng': [],
   'Tổ ép': [],
   'Tổ logo': [],
@@ -164,98 +167,6 @@ const teamUnitMap = {
   'Chụp khung': [],
   'Pha màu': [],
 };
-
-// app.get('/trash-weighings/tracking-scan', async (req, res) => {
-//   const { workDate, workShift } = req.query;
-
-//   if (!workDate || !workShift) {
-//     return res.status(400).json({ message: 'Thiếu workDate hoặc workShift' });
-//   }
-
-//   try {
-//     const pool = await poolPromise;
-
-//     // Lấy danh sách trashBin đã quét cùng departmentName + unitName
-//     const scannedResult = await pool.request()
-//       .input('workDate', sql.Date, workDate)
-//       .input('workShift', sql.NVarChar, workShift)
-//       .query(`
-//         SELECT DISTINCT 
-//           tb.trashBinCode,
-//           d.departmentName,
-//           u.unitName,
-//           tt.trashName,
-//           us.fullName
-//         FROM TrashWeighings tw
-//         JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
-//         JOIN Departments d ON tb.departmentID = d.departmentID
-//         LEFT JOIN Units u ON tb.unitID = u.unitID
-//         JOIN TrashTypes tt ON tb.TrashTypeID = tt.TrashTypeID
-//         JOIN Users us ON tw.userID = us.userID
-//         WHERE tw.workDate = @workDate AND tw.workShift = @workShift
-//       `);
-
-//     console.log(scannedResult);
-
-//     // Tạo map danh sách bộ phận và đơn vị đã quét
-//     const scannedMap = new Map(); // departmentName => Set(unitName)
-//     for (const row of scannedResult.recordset) {
-//       const dept = row.departmentName?.trim();
-//       const unit = row.unitName?.trim();
-
-//       if (!scannedMap.has(dept)) {
-//         scannedMap.set(dept, new Set());
-//       }
-
-//       if (unit) {
-//         scannedMap.get(dept).add(unit);
-//       }
-//     }
-    
-//     console.log(scannedMap);
-
-//     const unscannedTeams = {};
-
-//     for (const [team, units] of Object.entries(teamUnitMap)) {
-//       const scannedUnits = scannedMap.get(team) || new Set();
-
-//       if (units.length === 0) {
-//         // Bộ phận không có đơn vị con, kiểm tra đã quét chưa
-//         if (!scannedMap.has(team)) {
-//           unscannedTeams[team] = [];
-//         }
-//       } else {
-//         // Bộ phận có đơn vị con, kiểm tra đơn vị nào chưa quét
-//         const unscanned = units.filter(unit => !scannedUnits.has(unit));
-//         if (unscanned.length > 0) {
-//           unscannedTeams[team] = unscanned;
-//         }
-//       }
-//     }
-
-//     const scannedTeams = {}; // Mới
-
-//     for (const [team, units] of Object.entries(teamUnitMap)) {
-//       const scannedUnits = scannedMap.get(team) || new Set();
-
-//       if (units.length === 0) {
-//         if (scannedMap.has(team)) {
-//           scannedTeams[team] = [];
-//         }
-//       } else {
-//         const scanned = units.filter(unit => scannedUnits.has(unit));
-//         if (scanned.length > 0) {
-//           scannedTeams[team] = scanned;
-//         }
-//       }
-//     }
-
-//     return res.json({ unscannedTeams, scannedTeams });
-//   } catch (err) {
-//     console.error(err);
-//     return res.status(500).json({ message: 'Lỗi truy vấn dữ liệu' });
-//   }
-// });
 
 app.get('/trash-weighings/tracking-scan', async (req, res) => {
   const { workDate, workShift } = req.query;
@@ -862,7 +773,7 @@ app.post("/login", async (req, res) => {
 });
 
 app.post("/user", async (req, res) => {
-  const { username, password, fullName, phone, role, createdBy } = req.body;
+  const { username, password, fullName, phone, role, createdBy, operationType } = req.body;
   try {
     const pool = await poolPromise;
 
@@ -890,9 +801,10 @@ app.post("/user", async (req, res) => {
       .input("isActive", sql.Bit, 1)
       .input("createdBy", sql.Int, createdBy)
       .input("createdAt", sql.DateTime, nowVN)
+      .input("operationType", sql.NVarChar, operationType)
       .query(`
-        INSERT INTO Users (username, passwordHash, fullName, phone, role, isActive, createdBy, createdAt)
-        VALUES (@username, @passwordHash, @fullName, @phone, @role, @isActive, @createdBy, @createdAt)
+        INSERT INTO Users (username, passwordHash, fullName, phone, role, isActive, createdBy, createdAt, operationType)
+        VALUES (@username, @passwordHash, @fullName, @phone, @role, @isActive, @createdBy, @createdAt, @operationType)
       `);
 
     res.send("✅ Đã thêm tài khoản");
@@ -1032,15 +944,16 @@ app.get('/api/statistics/today-percentage', async (req, res) => {
 
 const TRASH_NAMES = [
     'Giẻ lau có chứa thành phần nguy hại',
+    'Giẻ lau dính lapa',
     'Băng keo dính mực',
     'Keo bàn thải',
     'Mực in thải',
-    'Mực in thải lapa',
+    'Mực in lapa thải',
     'Vụn logo',
     'Lụa căng khung',
     'Rác sinh hoạt'
 ];
-const SHIFTS = ['ca1', 'ca2', 'ca3', 'dai1', 'dai2', 'cahc'];
+const SHIFTS = ['ca1', 'ca2', 'ca3', 'dai1', 'dai2', 'cahc', null];
 
 app.get('/api/statistics/weight-by-unit', async (req, res) => {
   try {
@@ -1066,7 +979,7 @@ app.get('/api/statistics/weight-by-unit', async (req, res) => {
       JOIN TrashTypes tt ON tb.trashTypeID = tt.trashTypeID
       JOIN Departments d ON tb.departmentID = d.departmentID
       LEFT JOIN Units u ON tb.unitID = u.unitID
-      WHERE tw.workDate BETWEEN @startDate AND @endDate
+      WHERE ISNULL(tw.workDate, tw.weighingTime) BETWEEN @startDate AND @endDate
       GROUP BY 
           d.departmentName,
           u.unitName,
@@ -1095,13 +1008,14 @@ app.get('/api/statistics/weight-by-unit', async (req, res) => {
     // Chuẩn hóa kết quả
     const finalResult = [];
 
+    const normalizeStr = str => str.normalize("NFC");
     for (const key in grouped) {
       const item = grouped[key];
       const values = [];
 
       for (const trashName of TRASH_NAMES) {
         for (const shift of SHIFTS) {
-          const w = item.weights[`${trashName}__${shift}`];
+          const w = item.weights[`${normalizeStr(trashName)}__${shift}`];
           values.push(w ? Math.round(w * 100) / 100 : 0);
         }
       }
@@ -1113,6 +1027,8 @@ app.get('/api/statistics/weight-by-unit', async (req, res) => {
         value: [...values, Math.round(total * 100) / 100]
       });
     }
+
+    console.log(finalResult);
 
     res.json({ status: 'success', data: finalResult });
 
