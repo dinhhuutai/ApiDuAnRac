@@ -8,6 +8,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { apiInkWeighing } = require('./InkWeighing/api');
 const { apiFeedback } = require('./Feedback/api');
+const { apiSuggestion } = require('./Suggestion/api');
 const SECRET = "Tai31072002@";
 
 const app = express();
@@ -33,12 +34,17 @@ app.get('/', (req, res) => {
 
 apiInkWeighing(app);
 apiFeedback(app);
+apiSuggestion(app);
 
 app.get("/users/get", async (req, res) => {
   try {
     const pool = await poolPromise;
     const result = await pool.request().query(`
-      SELECT userID, username, fullName, phone, role, isActive, createdAt, updatedAt 
+      SELECT 
+        userID, username, fullName, phone, role, isActive, createdAt, updatedAt,
+        operationType,
+        roleEditReport, actionHistoryWeigh, managerQRcode,
+        managerUser, managerTrash, managerTeamMember, managerFeedback
       FROM [Users]
     `);
     res.json(result.recordset);
@@ -51,7 +57,6 @@ app.get("/users/get", async (req, res) => {
 app.get("/trashbins/get-id-by-names", async (req, res) => {
   const { departmentName, unitName, trashName } = req.query;
 
-  console.log({ departmentName, unitName, trashName })
   try {
     const pool = await poolPromise;
 
@@ -99,8 +104,6 @@ app.get("/trashbins/get-id-by-names", async (req, res) => {
             LTRIM(RTRIM(t.trashName)) COLLATE Latin1_General_CI_AI = LTRIM(RTRIM(@trashName)) COLLATE Latin1_General_CI_AI;
         END
       `);
-
-    console.log(result);
 
     if (result.recordset.length === 0) {
       return res.status(404).json({ message: "Không tìm thấy thông tin phù hợp" });
@@ -491,7 +494,6 @@ app.post("/trash-weighings", async (req, res) => {
 
   const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
 
-  console.log({ trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName })
   try {
     const pool = await poolPromise;
     const result = await pool.request()
@@ -505,9 +507,19 @@ app.post("/trash-weighings", async (req, res) => {
       .input("workDate", sql.Date, workDate)
       .input("userName", sql.NVarChar, userName)
       .query(`
-        INSERT INTO TrashWeighings (trashBinCode, userID, weighingTime, weightKg, workShift, updatedAt, updatedBy, workDate, userName)
-        OUTPUT INSERTED.weighingID
-        VALUES (@trashBinCode, @userID, @weighingTime, @weightKg, @workShift, @updatedAt, @updatedBy, @workDate, @userName)
+  DECLARE @output TABLE (weighingID INT);
+
+  INSERT INTO TrashWeighings (
+    trashBinCode, userID, weighingTime, weightKg, workShift, 
+    updatedAt, updatedBy, workDate, userName
+  )
+  OUTPUT INSERTED.weighingID INTO @output
+  VALUES (
+    @trashBinCode, @userID, @weighingTime, @weightKg, @workShift,
+    @updatedAt, @updatedBy, @workDate, @userName
+  );
+
+  SELECT * FROM @output;
       `);
 
     
@@ -547,7 +559,6 @@ app.get("/trash-weighings/:id", async (req, res) => {
 app.put("/trash-weighings/:id", async (req, res) => {
   const { id } = req.params;
 
-  console.log('id: ', id);
   const {
     weightKg,
     workShift,
@@ -734,6 +745,73 @@ app.put("/user/:id", async (req, res) => {
   }
 });
 
+app.put("/users/update/:userID", async (req, res) => {
+  const userID = parseInt(req.params.userID);
+  const {
+    fullName,
+    phone,
+    password, // Nếu muốn update password luôn
+    operationType,
+    roleEditReport,
+    actionHistoryWeigh,
+    managerQRcode,
+    managerUser,
+    managerTrash,
+    managerTeamMember,
+    managerFeedback,
+  } = req.body;
+
+  try {
+    const pool = await poolPromise;
+
+    // Nếu có password => hash lại
+    let passwordHash = null;
+    if (password && password.trim() !== "") {
+      const bcrypt = require("bcrypt");
+      passwordHash = await bcrypt.hash(password, 10);
+    }
+
+    const request = pool.request()
+      .input("userID", sql.Int, userID)
+      .input("fullName", sql.NVarChar, fullName)
+      .input("phone", sql.NVarChar, phone)
+      .input("operationType", sql.NVarChar, operationType)
+      .input("roleEditReport", sql.Bit, roleEditReport)
+      .input("actionHistoryWeigh", sql.Bit, actionHistoryWeigh)
+      .input("managerQRcode", sql.Bit, managerQRcode)
+      .input("managerUser", sql.Bit, managerUser)
+      .input("managerTrash", sql.Bit, managerTrash)
+      .input("managerTeamMember", sql.Bit, managerTeamMember)
+      .input("managerFeedback", sql.Bit, managerFeedback);
+
+    if (passwordHash) {
+      request.input("passwordHash", sql.NVarChar, passwordHash);
+    }
+
+    await request.query(`
+      UPDATE Users SET
+        fullName = @fullName,
+        phone = @phone,
+        ${passwordHash ? "passwordHash = @passwordHash," : ""}
+        operationType = @operationType,
+        roleEditReport = @roleEditReport,
+        actionHistoryWeigh = @actionHistoryWeigh,
+        managerQRcode = @managerQRcode,
+        managerUser = @managerUser,
+        managerTrash = @managerTrash,
+        managerTeamMember = @managerTeamMember,
+        managerFeedback = @managerFeedback,
+        updatedAt = GETDATE()
+      WHERE userID = @userID
+    `);
+
+    res.send("✅ Đã cập nhật người dùng");
+  } catch (err) {
+    console.error("❌ Lỗi khi cập nhật người dùng:", err);
+    res.status(500).send("❌ Lỗi server");
+  }
+});
+
 
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
@@ -773,7 +851,7 @@ app.post("/login", async (req, res) => {
 });
 
 app.post("/user", async (req, res) => {
-  const { username, password, fullName, phone, role, createdBy, operationType } = req.body;
+  const { username, password, fullName, phone, role, createdBy, operationType, roleEditReport, actionHistoryWeigh, managerQRcode, managerUser, managerTrash, managerTeamMember, managerFeedback } = req.body;
   try {
     const pool = await poolPromise;
 
@@ -802,9 +880,16 @@ app.post("/user", async (req, res) => {
       .input("createdBy", sql.Int, createdBy)
       .input("createdAt", sql.DateTime, nowVN)
       .input("operationType", sql.NVarChar, operationType)
+      .input("roleEditReport", sql.Bit, roleEditReport)
+      .input("actionHistoryWeigh", sql.Bit, actionHistoryWeigh)
+      .input("managerQRcode", sql.Bit, managerQRcode)
+      .input("managerUser", sql.Bit, managerUser)
+      .input("managerTrash", sql.Bit, managerTrash)
+      .input("managerTeamMember", sql.Bit, managerTeamMember)
+      .input("managerFeedback", sql.Bit, managerFeedback)
       .query(`
-        INSERT INTO Users (username, passwordHash, fullName, phone, role, isActive, createdBy, createdAt, operationType)
-        VALUES (@username, @passwordHash, @fullName, @phone, @role, @isActive, @createdBy, @createdAt, @operationType)
+        INSERT INTO Users (username, passwordHash, fullName, phone, role, isActive, createdBy, createdAt, operationType, roleEditReport, actionHistoryWeigh, managerQRcode, managerUser, managerTrash, managerTeamMember, managerFeedback)
+        VALUES (@username, @passwordHash, @fullName, @phone, @role, @isActive, @createdBy, @createdAt, @operationType, @roleEditReport, @actionHistoryWeigh, @managerQRcode, @managerUser, @managerTrash, @managerTeamMember, @managerFeedback)
       `);
 
     res.send("✅ Đã thêm tài khoản");
@@ -1027,8 +1112,6 @@ app.get('/api/statistics/weight-by-unit', async (req, res) => {
         value: [...values, Math.round(total * 100) / 100]
       });
     }
-
-    console.log(finalResult);
 
     res.json({ status: 'success', data: finalResult });
 
@@ -1431,6 +1514,371 @@ app.get('/api/bin-standard', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.get("/trash-types", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .query(`
+        SELECT trashTypeID, trashType, trashName
+        FROM TrashTypes
+        ORDER BY trashName
+      `);
+
+    res.status(200).json(result.recordset);
+  } catch (err) {
+    console.error("❌ Lỗi khi truy vấn TrashTypes:", err);
+    res.status(500).send("Lỗi máy chủ khi lấy loại rác.");
+  }
+});
+
+app.post("/garbage-trucks", async (req, res) => {
+  const { truckName, trashTypeIDs, truckCode } = req.body;
+
+  const nowVN = DateTime.now().setZone("Asia/Ho_Chi_Minh").toFormat("yyyy-MM-dd HH:mm:ss");
+
+  if (!Array.isArray(trashTypeIDs) || trashTypeIDs.length === 0) {
+    return res.status(400).json({ message: "⚠️ Vui lòng chọn ít nhất một loại rác." });
+  }
+
+  const pool = await poolPromise;
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    await transaction.begin();
+
+    const request = new sql.Request(transaction);
+
+    // 1. Thêm vào bảng GarbageTrucks
+    const truckResult = await request
+      .input("truckName", sql.NVarChar, truckName)
+      .input("truckCode", sql.NVarChar, truckCode)
+      .input("createdAt", sql.DateTime, nowVN)
+      .query(`
+        INSERT INTO GarbageTrucks (truckName, truckCode, createdAt)
+        OUTPUT INSERTED.garbageTruckID
+        VALUES (@truckName, @truckCode, @createdAt)
+      `);
+
+    const insertedTruckId = truckResult.recordset[0].garbageTruckID;
+
+    // 2. Thêm vào bảng trung gian GarbageTruckTrashTypes
+    for (const trashTypeID of trashTypeIDs) {
+      const typeRequest = new sql.Request(transaction); // Tạo request mới trong mỗi vòng lặp
+      await typeRequest
+        .input("garbageTruckID", sql.Int, insertedTruckId)
+        .input("trashTypeID", sql.Int, trashTypeID)
+        .query(`
+          INSERT INTO GarbageTruckTrashTypes (garbageTruckID, trashTypeID)
+          VALUES (@garbageTruckID, @trashTypeID)
+        `);
+    }
+
+    await transaction.commit();
+
+    res.status(200).json({
+      message: "✅ Thêm xe rác và loại rác thành công!",
+      id: insertedTruckId,
+    });
+
+  } catch (err) {
+    console.error("❌ Lỗi thêm xe rác:", err);
+
+    try {
+      await transaction.rollback();
+    } catch (rollbackErr) {
+      console.error("⚠️ Lỗi khi rollback:", rollbackErr);
+    }
+
+    if (err.number === 2627) {
+      res.status(400).json({ message: "⚠️ Mã xe đã tồn tại." });
+    } else {
+      res.status(500).json({ message: "❌ Lỗi khi thêm xe rác." });
+    }
+  }
+});
+
+
+app.get("/garbage-trucks", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    const result = await pool.request().query(`
+      SELECT 
+        gt.garbageTruckID,
+        gt.truckName,
+        gt.truckCode,
+        gt.weightKg,
+        gt.createdAt,
+        tt.trashTypeID,
+        tt.trashName,
+        tt.trashType
+      FROM GarbageTrucks gt
+      JOIN GarbageTruckTrashTypes gttt ON gt.garbageTruckID = gttt.garbageTruckID
+      JOIN TrashTypes tt ON gttt.trashTypeID = tt.trashTypeID
+      ORDER BY gt.createdAt DESC
+    `);
+
+    const grouped = {};
+
+    for (const row of result.recordset) {
+      const {
+        garbageTruckID,
+        truckName,
+        truckCode,
+        weightKg,
+        createdAt,
+        trashName,
+        trashType,
+        trashTypeID,
+      } = row;
+
+      if (!grouped[garbageTruckID]) {
+        grouped[garbageTruckID] = {
+          garbageTruckID,
+          truckName,
+          truckCode,
+          weightKg,
+          createdAt,
+          trashTypes: [],       // chứa dạng string hiển thị
+          trashTypeIDs: [],     // chứa ID để dùng trong checkbox
+        };
+      }
+
+      grouped[garbageTruckID].trashTypes.push(`${trashName} (${trashType})`);
+      grouped[garbageTruckID].trashTypeIDs.push(trashTypeID);
+    }
+
+    const data = Object.values(grouped);
+    res.status(200).json(data);
+  } catch (err) {
+    console.error("❌ Lỗi khi lấy danh sách xe rác:", err);
+    res.status(500).send("Lỗi khi lấy danh sách xe rác.");
+  }
+});
+
+app.put('/garbage-trucks/:id', async (req, res) => {
+  const { id } = req.params;
+  const { truckName, trashTypeIDs } = req.body;
+
+  if (!Array.isArray(trashTypeIDs) || trashTypeIDs.length === 0) {
+    return res.status(400).json({ message: "⚠️ Vui lòng chọn ít nhất một loại rác." });
+  }
+
+  try {
+    const pool = await poolPromise;
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    // Tạo request cho transaction
+    let request = new sql.Request(transaction);
+
+    // 1. Cập nhật tên xe
+    await request
+      .input('garbageTruckID', sql.Int, id)
+      .input('truckName', sql.NVarChar(100), truckName)
+      .query(`
+        UPDATE GarbageTrucks
+        SET truckName = @truckName
+        WHERE garbageTruckID = @garbageTruckID
+      `);
+
+    // 2. Xóa loại rác cũ
+    request = new sql.Request(transaction); // ❗ Tạo mới tránh trùng tham số
+    await request
+      .input('garbageTruckID', sql.Int, id)
+      .query(`
+        DELETE FROM GarbageTruckTrashTypes WHERE garbageTruckID = @garbageTruckID
+      `);
+
+    // 3. Thêm lại loại rác mới
+    for (const trashTypeID of trashTypeIDs) {
+      request = new sql.Request(transaction); // ❗ Luôn tạo mới
+      await request
+        .input('garbageTruckID', sql.Int, id)
+        .input('trashTypeID', sql.Int, trashTypeID)
+        .query(`
+          INSERT INTO GarbageTruckTrashTypes (garbageTruckID, trashTypeID)
+          VALUES (@garbageTruckID, @trashTypeID)
+        `);
+    }
+
+    await transaction.commit();
+    res.json({ message: '✅ Cập nhật xe rác thành công.' });
+  } catch (error) {
+    console.error('❌ Lỗi khi cập nhật xe rác:', error);
+    res.status(500).json({ error: 'Lỗi server khi cập nhật xe rác.' });
+  }
+});
+
+// DELETE /api/garbage-trucks/:id
+app.delete('/garbage-trucks/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const pool = await poolPromise;
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    // 1. Xoá các loại rác liên kết
+    let request = new sql.Request(transaction);
+    await request
+      .input('garbageTruckID', sql.Int, id)
+      .query('DELETE FROM GarbageTruckTrashTypes WHERE garbageTruckID = @garbageTruckID');
+
+    // 2. Xoá xe rác chính
+    request = new sql.Request(transaction);
+    const result = await request
+      .input('garbageTruckID', sql.Int, id)
+      .query('DELETE FROM GarbageTrucks WHERE garbageTruckID = @garbageTruckID');
+
+    if (result.rowsAffected[0] === 0) {
+      await transaction.rollback();
+      return res.status(404).json({ message: "Không tìm thấy xe rác." });
+    }
+
+    await transaction.commit();
+    res.json({ message: "✅ Đã xóa xe rác thành công." });
+  } catch (err) {
+    console.error("❌ Lỗi khi xóa xe rác:", err);
+    res.status(500).json({ message: "Lỗi máy chủ khi xóa." });
+  }
+});
+
+app.post("/garbage-trucks/filter", async (req, res) => {
+  const { trashTypeIDs } = req.body;
+  if (!Array.isArray(trashTypeIDs) || trashTypeIDs.length === 0) {
+    return res.status(400).json({ message: "Vui lòng chọn ít nhất 1 loại rác." });
+  }
+
+  try {
+    const pool = await poolPromise;
+
+    const result = await pool.request().query(`
+      SELECT gt.*, gttt.trashTypeID
+      FROM GarbageTrucks gt
+      JOIN GarbageTruckTrashTypes gttt ON gt.garbageTruckID = gttt.garbageTruckID
+    `);
+
+    const grouped = {};
+    for (const row of result.recordset) {
+      const id = row.garbageTruckID;
+      if (!grouped[id]) {
+        grouped[id] = {
+          garbageTruckID: id,
+          truckName: row.truckName,
+          truckCode: row.truckCode,
+          weightKg: row.weightKg || 0,
+          createdAt: row.createdAt,
+          trashTypeIDs: [],
+        };
+      }
+      grouped[id].trashTypeIDs.push(row.trashTypeID);
+    }
+
+    const filtered = Object.values(grouped).filter(truck =>
+      trashTypeIDs.every(tid => truck.trashTypeIDs.includes(tid))
+    );
+
+    res.json(filtered);
+  } catch (err) {
+    console.error("❌ Lỗi lọc xe:", err);
+    res.status(500).send("Lỗi server");
+  }
+});
+
+app.get("/weighing-records", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT * FROM WeighingRecords
+      WHERE truckCode IS NULL
+      ORDER BY createdAt ASC
+    `);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error("❌ Lỗi lấy cân:", err);
+    res.status(500).send("Lỗi server");
+  }
+});
+
+app.post("/assign-weight", async (req, res) => {
+  const { truckCode, weightKg, recordIDs } = req.body;
+
+  if (!truckCode || !Array.isArray(recordIDs) || recordIDs.length === 0) {
+    return res.status(400).json({ message: "Thiếu dữ liệu." });
+  }
+
+  try {
+    const pool = await poolPromise;
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    const request = new sql.Request(transaction);
+
+    // Cập nhật truckCode cho các bản ghi cân
+    for (const id of recordIDs) {
+      const updateRequest = new sql.Request(transaction);
+      await updateRequest
+        .input("truckCode", sql.NVarChar, truckCode)
+        .input("id", sql.Int, id)
+        .query("UPDATE WeighingRecords SET truckCode = @truckCode WHERE weighingRecordID = @id");
+    }
+
+    // Cập nhật tổng weight vào GarbageTrucks
+    const updateTruckRequest = new sql.Request(transaction);
+    await updateTruckRequest
+      .input("weightKg", sql.Float, weightKg)
+      .input("truckCode", sql.NVarChar, truckCode)
+      .query("UPDATE GarbageTrucks SET weightKg = @weightKg WHERE truckCode = @truckCode");
+
+    await transaction.commit();
+
+    res.json({ message: "Phân xe và gán khối lượng thành công." });
+  } catch (err) {
+    console.error("❌ Lỗi gán:", err);
+    res.status(500).send("Lỗi khi gán dữ liệu.");
+  }
+});
+
+app.put("/garbage-trucks/:truckCode/reload", async (req, res) => {
+  const { truckCode } = req.params;
+
+  try {
+    const pool = await poolPromise;
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    // 1. Xóa truckCode ở bảng WeighingRecords
+    const clearWeighing = new sql.Request(transaction);
+    await clearWeighing
+      .input("truckCode", sql.NVarChar, truckCode)
+      .query(`
+        UPDATE WeighingRecords
+        SET truckCode = NULL
+        WHERE truckCode = @truckCode
+      `);
+
+    // 2. Reset weightKg ở GarbageTrucks
+    const resetTruck = new sql.Request(transaction);
+    await resetTruck
+      .input("truckCode", sql.NVarChar, truckCode)
+      .query(`
+        UPDATE GarbageTrucks
+        SET weightKg = NULL
+        WHERE truckCode = @truckCode
+      `);
+
+    await transaction.commit();
+    res.json({ message: "✅ Đã thu hồi dữ liệu thành công." });
+  } catch (err) {
+    console.error("❌ Lỗi thu hồi dữ liệu:", err);
+    res.status(500).json({ message: "Lỗi khi thu hồi dữ liệu." });
+  }
+});
+
+
+
 
 
 app.listen(port, '0.0.0.0', () => {
