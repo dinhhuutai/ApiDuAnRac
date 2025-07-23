@@ -3,6 +3,7 @@ const { sql, poolPromise } = require("../db");
 const upload = require('../middleware/upload');
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
+const { sendSuggestionEmail } = require("../utils/mailer");
 
 
 function apiSuggestion(app) {
@@ -49,6 +50,27 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
           VALUES (@suggestionId, @image_url)
         `);
     }
+
+    // Gửi email
+    const recipients = [
+      "dinhhuutai317678@gmail.com",
+      "lttnguyen328@gmail.com",
+    ]; // danh sách email cần nhận
+
+    const html = `
+      <h3>📢 Có góp ý mới từ CNV</h3>
+      <p><strong>Phòng ban:</strong> ${sender_department || "Ẩn danh"}</p>
+      <p><strong>Người gửi:</strong> ${sender_name || "Ẩn danh"}</p>
+      <p><strong>Số điện thoại:</strong> ${sender_phone || "Ẩn danh"}</p>
+      <p><strong>Nội dung góp ý:</strong></p>
+      <p>${content}</p>
+    `;
+
+    await sendSuggestionEmail({
+      to: recipients.join(","),
+      subject: `📨 Góp ý mới từ CNV - ${sender_department || "Không rõ"}`,
+      html,
+    });
 
     res.json({ success: true, message: "Góp ý đã được lưu!" });
   } catch (err) {

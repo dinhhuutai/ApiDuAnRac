@@ -103,6 +103,17 @@ function apiInkWeighing(app) {
 
         const sessionId = sessionResult.recordset[0].weighingSessionId;
 
+        try {
+            const result = await pool.request()
+                .input('poperationCode', sql.NVarChar, operationCode)
+                .input('pWeighingSectionID', sql.Int, sessionId)
+                .execute('Weighing_Spr_W2ERP');
+            console.log('Stored procedure executed successfully');
+            console.log(result);
+        } catch (err) {
+            console.error('Error executing stored procedure:', err);
+        }
+
         // Lưu các item
         for (const item of data.items) {
             if (!item.color || !item.weight) throw new Error('Thiếu dữ liệu color hoặc weight');
@@ -117,7 +128,7 @@ function apiInkWeighing(app) {
                 .input('inkCode', sql.NVarChar, inkCode)
                 .input('inkName', sql.NVarChar, inkName)
                 .input('productionDate', sql.Date, productionDate)
-                .input('weight', sql.Float, weight)
+                .input('weight', sql.Float, weight.toFixed(0))
                 .input('weightBin', sql.Float, weightBin)
                 .query(`
                     INSERT INTO WeighingSessionItems
@@ -283,6 +294,31 @@ function apiInkWeighing(app) {
         console.error('Lỗi lấy lịch sử cân mực:', err);
         res.status(500).json({ error: 'Lỗi server khi truy vấn lịch sử cân mực' });
     }
+});
+
+app.get('/api/suggestions/:id/images', async (req, res) => {
+  try {
+    const suggestionId = parseInt(req.params.id);
+    if (isNaN(suggestionId)) {
+      return res.status(400).json({ error: 'ID không hợp lệ' });
+    }
+
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('suggestionId', sql.Int, suggestionId)
+      .query(`
+        SELECT suggestionImagesId, image_url, uploaded_at
+        FROM SuggestionImages
+        WHERE suggestionId = @suggestionId
+        ORDER BY uploaded_at DESC
+      `);
+
+    res.json({ success: true, data: result.recordset });
+
+  } catch (err) {
+    console.error('Lỗi khi lấy ảnh góp ý:', err);
+    res.status(500).json({ success: false, error: 'Lỗi server khi lấy ảnh' });
+  }
 });
 
 
