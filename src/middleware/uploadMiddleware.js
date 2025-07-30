@@ -17,7 +17,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage,
   limits: {
-    fileSize: 5 * 1024 * 1024 // tối đa 5MB mỗi file
+    fileSize: 10 * 1024 * 1024 // tối đa 5MB mỗi file
   }
 }); // ⬅️ đây là object có .array()
 

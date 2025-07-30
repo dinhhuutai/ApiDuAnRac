@@ -4,11 +4,14 @@ const { sql, poolPromise } = require("./db");
 const bcrypt = require("bcrypt");
 const { DateTime } = require('luxon');
 
+const uploadClassification = require('./middleware/uploadClassification');
+
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { apiInkWeighing } = require('./InkWeighing/api');
 const { apiFeedback } = require('./Feedback/api');
 const { apiSuggestion } = require('./Suggestion/api');
+const { apiUtilsConvert } = require('./UtilsConvert/api');
 const SECRET = "Tai31072002@";
 
 const app = express();
@@ -16,6 +19,7 @@ const port = process.env.PORT || 5000;
 
 app.use(express.json());
 app.use('/uploads', express.static('uploads'));
+
 
 app.use(cors({
   origin: [
@@ -35,6 +39,7 @@ app.get('/', (req, res) => {
 apiInkWeighing(app);
 apiFeedback(app);
 apiSuggestion(app);
+apiUtilsConvert(app);
 
 app.get("/users/get", async (req, res) => {
   try {
@@ -1225,6 +1230,7 @@ app.get('/api/departments', async (req, res) => {
     res.json(result.recordset);
   } catch (err) {
     res.status(500).json({ error: err.message });
+    console.log(err.message);
   }
 });
 
@@ -1292,9 +1298,13 @@ app.get('/trash-bin-in-areas', async (req, res) => {
   }
 });
 
-app.post('/submit-classification', async (req, res) => {
-  const { department, unit, trashBins, feedbackNote, user } = req.body;
-  
+app.post('/submit-classification', uploadClassification.array('images', 10), async (req, res) => {
+  const department = JSON.parse(req.body.department);
+const unit = JSON.parse(req.body.unit);
+const trashBins = JSON.parse(req.body.trashBins);
+const feedbackNote = req.body.feedbackNote || '';
+const user = parseInt(req.body.user, 10); // Vì formData sẽ gửi kiểu string
+
   const nowVN = DateTime.now().setZone('Asia/Ho_Chi_Minh').toFormat('yyyy-MM-dd HH:mm:ss');
 
   try {
@@ -1317,6 +1327,19 @@ app.post('/submit-classification', async (req, res) => {
       `);
 
     const newCheckID = insertCheck.recordset[0].classificationCheckID;
+
+    
+    // Lưu hình ảnh
+    const files = req.files || [];
+    for (const file of files) {
+  await transaction.request()
+    .input("classificationCheckID", sql.Int, newCheckID)
+    .input("imageUrl", sql.NVarChar, file.path)
+    .query(`
+      INSERT INTO ClassificationCheckImages (classificationCheckID, imageUrl)
+      VALUES (@classificationCheckID, @imageUrl)
+    `);
+}
 
     // 2. Insert vào InfoClassificationChecks
     for (const bin of trashBins) {
