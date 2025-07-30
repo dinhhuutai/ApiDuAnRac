@@ -1455,6 +1455,22 @@ app.get('/classification-history', async (req, res) => {
       }
     });
 
+    // Truy vấn thêm ảnh
+const checkIds = Object.keys(grouped).map((id) => parseInt(id));
+if (checkIds.length > 0) {
+  const imageResult = await pool.request()
+    .query(`SELECT classificationCheckID, imageUrl FROM ClassificationCheckImages WHERE classificationCheckID IN (${checkIds.join(',')})`);
+
+  imageResult.recordset.forEach((img) => {
+    if (grouped[img.classificationCheckID]) {
+      if (!grouped[img.classificationCheckID].images) {
+        grouped[img.classificationCheckID].images = [];
+      }
+      grouped[img.classificationCheckID].images.push(img.imageUrl);
+    }
+  });
+}
+
     res.json({ success: true, data: Object.values(grouped) });
   } catch (err) {
     console.error('Lỗi lấy lịch sử phân loại:', err);
@@ -1466,6 +1482,10 @@ app.delete('/classification-history/:id', async (req, res) => {
   const { id } = req.params;
   const pool = await poolPromise;
   try {
+    await pool.request()
+      .input('id', sql.Int, id)
+      .query('DELETE FROM ClassificationCheckImages WHERE classificationCheckID = @id');
+
     await pool.request()
       .input('id', sql.Int, id)
       .query('DELETE FROM InfoClassificationChecks WHERE classificationCheckID = @id');
