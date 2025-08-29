@@ -1,10 +1,13 @@
 require('dotenv').config();
 const express = require("express");
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 const { sql, poolPromise } = require("./db");
 const bcrypt = require("bcrypt");
 const { DateTime } = require('luxon');
 
 const uploadClassification = require('./middleware/uploadClassification');
+const { signAccessToken, signRefreshToken, setRefreshCookie } = require('./utils/auth');
 
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
@@ -818,42 +821,96 @@ app.put("/users/update/:userID", async (req, res) => {
 });
 
 
-app.post("/login", async (req, res) => {
-  const { username, password } = req.body;
-  
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ success: false, message: 'Thiếu username/password' });
+  }
+
   try {
     const pool = await poolPromise;
-    const result = await pool.request()
-      .input("username", sql.NVarChar, username)
-      .query("SELECT * FROM Users WHERE username = @username");
 
-    const user = result.recordset[0];
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-      return res.status(401).send({ 
-        status: 'error',
-      });
+    // Chỉ lấy các cột cần dùng
+    const r = await pool.request()
+      .input('username', sql.NVarChar, username)
+      .query(`
+        SELECT TOP 1
+          userID, username, passwordHash, fullName, email, role, isActive
+        FROM dbo.Users
+        WHERE username = @username
+      `);
+
+    const u = r.recordset[0];
+    if (!u) {
+      return res.status(401).json({ success: false, message: 'Sai tài khoản hoặc mật khẩu' });
+    }
+    if (u.isActive === 0) {
+      return res.status(401).json({ success: false, message: 'Tài khoản đang bị khóa' });
     }
 
-    const accessToken = jwt.sign({ userID: user.userID }, SECRET, { expiresIn: "1h" });
-    const refreshToken = jwt.sign({ userID: user.userID }, SECRET, { expiresIn: "7d" });
+    const ok = await bcrypt.compare(password, u.passwordHash || '');
+    if (!ok) {
+      return res.status(401).json({ success: false, message: 'Sai tài khoản hoặc mật khẩu' });
+    }
 
-    
-    const { passwordHash, ...userInfo } = user;
+    // Payload tối giản cho access token
+    const payload = {
+      userID: u.userID,
+      username: u.username,
+      role: u.role,
+      fullName: u.fullName,
+    };
 
-    res.json({ 
-      status: 'success',
+    const accessToken  = signAccessToken(payload);
+    const refreshToken = signRefreshToken({ userID: u.userID });
+
+    // Lưu refresh token vào DB để có thể revoke/rotate
+    const expiresAt = new Date(Date.now() + 30*24*60*60*1000);
+    await pool.request()
+      .input('userID',   sql.Int,       u.userID)
+      .input('token',    sql.NVarChar,  refreshToken)
+      .input('expiresAt',sql.DateTime2, expiresAt)
+      .query(`
+        IF OBJECT_ID('dbo.RefreshTokens', 'U') IS NULL
+        BEGIN
+          CREATE TABLE dbo.RefreshTokens(
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            userID INT NOT NULL,
+            token NVARCHAR(512) NOT NULL,
+            expiresAt DATETIME2 NOT NULL,
+            createdAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+          );
+          CREATE INDEX IX_RefreshTokens_userID ON dbo.RefreshTokens(userID);
+          CREATE INDEX IX_RefreshTokens_token ON dbo.RefreshTokens(token);
+        END;
+
+        INSERT INTO dbo.RefreshTokens(userID, token, expiresAt)
+        VALUES (@userID, @token, @expiresAt);
+      `);
+
+    // Gắn refreshToken vào cookie HTTP-only
+    setRefreshCookie(res, refreshToken);
+
+    // Trả user + accessToken qua body
+    return res.json({
+      success: true,
       data: {
-        accessToken, 
-        refreshToken,
-        user: userInfo,
-      }
+        accessToken,
+        user: {
+          userID: u.userID,
+          username: u.username,
+          fullName: u.fullName,
+          email: u.email,
+          role: u.role,
+        },
+      },
     });
   } catch (err) {
-    res.status(500).send({ 
-      status: 'error',
-    });
+    console.error('login error', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
+
 
 app.post("/user", async (req, res) => {
   const { username, password, fullName, phone, role, createdBy, operationType, roleEditReport, actionHistoryWeigh, managerQRcode, managerUser, managerTrash, managerTeamMember, managerFeedback } = req.body;
@@ -1054,69 +1111,63 @@ app.get('/api/statistics/weight-by-unit', async (req, res) => {
     }
 
     const pool = await poolPromise;
-    const result = await pool.request() // ✅ Đúng
-    .input('startDate', sql.Date, startDate)
-    .input('endDate', sql.Date, endDate)
-    .query(`
+
+    // Tạo cột pivot CASE WHEN cho từng loại rác & ca
+    const pivotColumns = [];
+    for (const trash of TRASH_NAMES) {
+      for (const shift of SHIFTS) {
+        const shiftLabel = shift === null ? 'IS NULL' : `= N'${shift}'`;
+        const alias = `${trash.replace(/\s+/g, '')}_${shift || 'null'}`;
+        pivotColumns.push(`
+          SUM(CASE 
+              WHEN tt.trashName = N'${trash}' AND tw.workShift ${shiftLabel}
+              THEN tw.weightKg ELSE 0 
+          END) AS [${alias}]
+        `);
+      }
+    }
+
+    // Query SQL tối ưu
+    const query = `
       SELECT 
           d.departmentName AS department,
           u.unitName AS unit,
-          tt.trashName,
-          tw.workShift,
+          ${pivotColumns.join(',')},
           SUM(tw.weightKg) AS totalWeight
       FROM TrashWeighings tw
       JOIN TrashBins tb ON tw.trashBinCode = tb.trashBinCode
       JOIN TrashTypes tt ON tb.trashTypeID = tt.trashTypeID
       JOIN Departments d ON tb.departmentID = d.departmentID
       LEFT JOIN Units u ON tb.unitID = u.unitID
-      WHERE ISNULL(tw.workDate, tw.weighingTime) BETWEEN @startDate AND @endDate
-      GROUP BY 
-          d.departmentName,
-          u.unitName,
-          tt.trashName,
-          tw.workShift
-    `);
+      WHERE 
+          (tw.workDate BETWEEN @startDate AND @endDate)
+          OR (tw.workDate IS NULL AND tw.weighingTime BETWEEN @startDate AND @endDate)
+      GROUP BY d.departmentName, u.unitName
+      ORDER BY d.departmentName, u.unitName
+    `;
 
-    const rows = result.recordset;
+    const result = await pool.request()
+      .input('startDate', sql.Date, startDate)
+      .input('endDate', sql.Date, endDate)
+      .query(query);
 
-    // Nhóm dữ liệu theo bộ phận + đơn vị
-    const grouped = {};
-
-    for (const row of rows) {
-      const key = `${row.department}||${row.unit}`;
-      if (!grouped[key]) {
-        grouped[key] = {
-          d: row.department,
-          u: row.unit,
-          weights: {}
-        };
-      }
-      const subKey = `${row.trashName}__${row.workShift}`;
-      grouped[key].weights[subKey] = row.totalWeight;
-    }
-
-    // Chuẩn hóa kết quả
-    const finalResult = [];
-
-    const normalizeStr = str => str.normalize("NFC");
-    for (const key in grouped) {
-      const item = grouped[key];
+    // Format dữ liệu giống code cũ
+    const finalResult = result.recordset.map(row => {
       const values = [];
-
-      for (const trashName of TRASH_NAMES) {
+      for (const trash of TRASH_NAMES) {
         for (const shift of SHIFTS) {
-          const w = item.weights[`${normalizeStr(trashName)}__${shift}`];
-          values.push(w ? Math.round(w * 100) / 100 : 0);
+          const alias = `${trash.replace(/\s+/g, '')}_${shift || 'null'}`;
+          values.push(Math.round((row[alias] || 0) * 100) / 100);
         }
       }
+      values.push(Math.round((row.totalWeight || 0) * 100) / 100);
 
-      const total = values.reduce((acc, cur) => acc + cur, 0);
-      finalResult.push({
-        d: item.d,
-        u: item.u,
-        value: [...values, Math.round(total * 100) / 100]
-      });
-    }
+      return {
+        d: row.department,
+        u: row.unit,
+        value: values
+      };
+    });
 
     res.json({ status: 'success', data: finalResult });
 
@@ -1224,7 +1275,7 @@ app.get('/api/departments', async (req, res) => {
           AND (c.unitID = u.unitID OR (c.unitID IS NULL AND u.unitID IS NULL))
           AND CAST(c.checkTime AS DATE) = @date
         )
-        WHERE d.areaName = N'Sản xuất'
+        WHERE d.isActiveCheck = 1
           AND c.classificationCheckID IS NULL
       `);
     res.json(result.recordset);
@@ -1920,7 +1971,885 @@ app.put("/garbage-trucks/:truckCode/reload", async (req, res) => {
   }
 });
 
+//////////////////////////////////////////////////
 
+app.post('/api/modules', async (req, res) => {
+  const { name, icon = null, description = null } = req.body || {};
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ success: false, message: 'name is required' });
+  }
+
+  const pool = await poolPromise;
+  const tx = new sql.Transaction(pool);
+
+  try {
+    await tx.begin();
+
+    // Kiểm tra trùng tên
+    const rqCheck = new sql.Request(tx);
+    const dup = await rqCheck
+      .input('name', sql.NVarChar, name.trim())
+      .query(`SELECT 1 FROM dbo.Modules WHERE name=@name`);
+    if (dup.recordset.length > 0) {
+      await tx.rollback();
+      return res.status(409).json({ success: false, message: 'Module name already exists' });
+    }
+
+    // Insert
+    const rqIns = new sql.Request(tx);
+    const r = await rqIns
+      .input('name', sql.NVarChar, name.trim())
+      .input('icon', sql.NVarChar, icon)
+      .input('description', sql.NVarChar, description)
+      .query(`
+        INSERT INTO dbo.Modules(name, icon, description)
+        OUTPUT INSERTED.moduleId, INSERTED.name, INSERTED.icon, INSERTED.description
+        VALUES(@name, @icon, @description)
+      `);
+
+    await tx.commit();
+    return res.status(201).json({ success: true, data: r.recordset[0] });
+  } catch (err) {
+    console.error('❌ Create module error:', err);
+    try { await tx.rollback(); } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.put('/api/modules/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  const { name, icon = null, description = null } = req.body || {};
+  if (!id) return res.status(400).json({ success: false, message: 'Invalid id' });
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ success: false, message: 'name is required' });
+  }
+
+  const pool = await poolPromise;
+  const tx = new sql.Transaction(pool);
+
+  try {
+    await tx.begin();
+
+    // Tồn tại?
+    const rqExist = new sql.Request(tx);
+    const existed = await rqExist
+      .input('id', sql.Int, id)
+      .query(`SELECT 1 FROM dbo.Modules WHERE moduleId=@id`);
+    if (existed.recordset.length === 0) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Not found' });
+    }
+
+    // Trùng tên (khác id)
+    const rqDup = new sql.Request(tx);
+    const dup = await rqDup
+      .input('id', sql.Int, id)
+      .input('name', sql.NVarChar, name.trim())
+      .query(`SELECT 1 FROM dbo.Modules WHERE name=@name AND moduleId<>@id`);
+    if (dup.recordset.length > 0) {
+      await tx.rollback();
+      return res.status(409).json({ success: false, message: 'Module name already exists' });
+    }
+
+    // Update
+    const rqUpd = new sql.Request(tx);
+    const r = await rqUpd
+      .input('id', sql.Int, id)
+      .input('name', sql.NVarChar, name.trim())
+      .input('icon', sql.NVarChar, icon)
+      .input('description', sql.NVarChar, description)
+      .query(`
+        UPDATE dbo.Modules
+        SET name=@name, icon=@icon, description=@description
+        OUTPUT INSERTED.moduleId, INSERTED.name, INSERTED.icon, INSERTED.description
+        WHERE moduleId=@id
+      `);
+
+    await tx.commit();
+    return res.json({ success: true, data: r.recordset[0] });
+  } catch (err) {
+    console.error('❌ Update module error:', err);
+    try { await tx.rollback(); } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.delete('/api/modules/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+  const pool = await poolPromise;
+  const tx = new sql.Transaction(pool);
+
+  try {
+    await tx.begin();
+
+    // (Tuỳ chọn) Nếu có bảng phụ tham chiếu đến Modules thì xoá/clear trước ở đây
+    // ví dụ: UserModules … (không có trong schema hiện tại)
+
+    const rqDel = new sql.Request(tx);
+    const r = await rqDel
+      .input('id', sql.Int, id)
+      .query(`
+        DELETE FROM dbo.Modules
+        OUTPUT DELETED.moduleId
+        WHERE moduleId=@id
+      `);
+
+    if (r.recordset.length === 0) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Not found' });
+    }
+
+    await tx.commit();
+    return res.json({ success: true, data: { moduleId: id } });
+  } catch (err) {
+    console.error('❌ Delete module error:', err);
+    try { await tx.rollback(); } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.get('/api/modules', async (req, res) => {
+  const { q = '', page = 1, pageSize = 10 } = req.query;
+  const _page = Math.max(1, parseInt(page, 10) || 1);
+  const _size = Math.max(1, Math.min(100, parseInt(pageSize, 10) || 10));
+  const offset = (_page - 1) * _size;
+
+  try {
+    const pool = await poolPromise;
+
+    const rCount = await pool.request()
+      .input('q', sql.NVarChar, `%${q}%`)
+      .query(`
+        SELECT COUNT(*) AS total
+        FROM dbo.Modules
+        WHERE (@q = '%%' OR name LIKE @q OR description LIKE @q)
+      `);
+    const total = rCount.recordset[0]?.total || 0;
+
+    const rData = await pool.request()
+      .input('q', sql.NVarChar, `%${q}%`)
+      .input('size', sql.Int, _size)
+      .input('offset', sql.Int, offset)
+      .query(`
+        SELECT moduleId, name, icon, description
+        FROM dbo.Modules
+        WHERE (@q = '%%' OR name LIKE @q OR description LIKE @q)
+        ORDER BY moduleId ASC
+        OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
+      `);
+
+    return res.json({
+      success: true,
+      data: rData.recordset,
+      pagination: { page: _page, pageSize: _size, total },
+    });
+  } catch (err) {
+    console.error('❌ List modules error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
+app.put('/api/modules/:id/reset', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+  const pool = await poolPromise;
+  const tx = new sql.Transaction(pool);
+
+  try {
+    await tx.begin();
+
+    const rq = new sql.Request(tx);
+    const r = await rq
+      .input('id', sql.Int, id)
+      .query(`
+        UPDATE dbo.Modules
+        SET icon = NULL,
+            description = NULL
+        WHERE moduleId = @id;
+
+        SELECT moduleId, name, icon, description
+        FROM dbo.Modules WHERE moduleId=@id;
+      `);
+
+    // r.recordsets[1] có SELECT cuối
+    const row = r.recordsets?.[1]?.[0];
+    if (!row) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Not found' });
+    }
+
+    await tx.commit();
+    return res.json({ success: true, data: row, message: '✅ Đã reset module.' });
+  } catch (err) {
+    console.error('❌ Reset module error:', err);
+    try { await tx.rollback(); } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+/////////////
+
+app.get('/api/user-modules/:userId', async (req, res) => {
+  const id = Number(req.params.userId);
+  if (!id) return res.status(400).json({ success: false, message: 'Invalid userId' });
+
+  try {
+    const pool = await poolPromise;
+    const r = await pool.request()
+      .input('userId', sql.Int, id)
+      .query(`
+        SELECT um.userModuleId, um.userId, um.moduleId, um.role,
+               m.name, m.icon, m.description
+        FROM dbo.UserModules um
+        JOIN dbo.Modules m ON m.moduleId = um.moduleId
+        WHERE um.userId = @userId
+        ORDER BY m.name ASC
+      `);
+
+    return res.json({ success: true, data: r.recordset });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.put('/api/user-modules/:userId', async (req, res) => {
+  const userId = Number(req.params.userId);
+  const { assignments = [] } = req.body || {};
+  if (!userId) return res.status(400).json({ success: false, message: 'Invalid userId' });
+
+  // validate payload: role chỉ admin/user
+  for (const a of assignments) {
+    if (!a.moduleId || !['admin', 'user'].includes(a.role)) {
+      return res.status(400).json({ success: false, message: 'Invalid assignments payload' });
+    }
+  }
+
+  const pool = await poolPromise;
+  const tx = new sql.Transaction(pool);
+
+  try {
+    await tx.begin();
+
+    // Xoá tất cả quyền hiện tại của user
+    await new sql.Request(tx)
+      .input('userId', sql.Int, userId)
+      .query(`DELETE FROM dbo.UserModules WHERE userId=@userId`);
+
+    // Chèn lại theo payload
+    for (const a of assignments) {
+      await new sql.Request(tx)
+        .input('userId', sql.Int, userId)
+        .input('moduleId', sql.Int, a.moduleId)
+        .input('role', sql.NVarChar, a.role)
+        .query(`
+          INSERT INTO dbo.UserModules(userId, moduleId, role)
+          VALUES(@userId, @moduleId, @role)
+        `);
+    }
+
+    await tx.commit();
+    return res.json({ success: true, data: { userId, count: assignments.length } });
+  } catch (e) {
+    console.error('Update user-modules error:', e);
+    try { await tx.rollback(); } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.get('/api/users', async (req, res) => {
+  const { q = '', page = 1, pageSize = 12 } = req.query;
+  const _page = Math.max(1, parseInt(page,10)||1);
+  const _size = Math.max(1, Math.min(100, parseInt(pageSize,10)||12));
+  const offset = (_page - 1) * _size;
+
+  try {
+    const pool = await poolPromise;
+
+    const rCount = await pool.request()
+      .input('q', sql.NVarChar, `%${q}%`)
+      .query(`
+        SELECT COUNT(*) AS total
+        FROM dbo.Users
+        WHERE (@q='%%' OR userName LIKE @q OR fullName LIKE @q OR email LIKE @q)
+      `);
+    const total = rCount.recordset[0]?.total || 0;
+
+    const r = await pool.request()
+      .input('q', sql.NVarChar, `%${q}%`)
+      .input('size', sql.Int, _size)
+      .input('offset', sql.Int, offset)
+      .query(`
+        SELECT userId, userName, fullName, email, isActive
+        FROM dbo.Users
+        WHERE (@q='%%' OR userName LIKE @q OR fullName LIKE @q OR email LIKE @q)
+        ORDER BY userId DESC
+        OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
+      `);
+
+    return res.json({ success: true, data: r.recordset, pagination: { page: _page, pageSize: _size, total } });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.get("/api/users/:userId/modules-roles", async (req, res) => {
+  const { userId } = req.params;
+  const { q = "", page = 1, pageSize = 100 } = req.query;
+
+  const _userId = parseInt(userId, 10);
+  if (!Number.isInteger(_userId) || _userId <= 0) {
+    return res.status(400).json({ success: false, message: "userId không hợp lệ" });
+  }
+
+  const _page = Math.max(1, parseInt(page, 10) || 1);
+  const _size = Math.max(1, Math.min(200, parseInt(pageSize, 10) || 100));
+  const offset = (_page - 1) * _size;
+
+  try {
+    const pool = await poolPromise;
+
+    // Đếm tổng cho phân trang (nếu cần)
+    const rCount = await pool.request()
+      .input("q", sql.NVarChar, `%${q}%`)
+      .input("userId", sql.Int, _userId)
+      .query(`
+        SELECT COUNT(*) AS total
+        FROM dbo.Modules m
+        LEFT JOIN dbo.UserModules um
+          ON um.moduleId = m.moduleId AND um.userId = @userId
+        WHERE (@q = '%%' OR m.name LIKE @q OR m.description LIKE @q)
+      `);
+    const total = rCount.recordset[0]?.total || 0;
+
+    // Lấy data: nếu um.role = 'admin' => allowedRoles: ['admin','user'],
+    //            nếu 'user' => ['user'],
+    //            nếu NULL => []
+    const rData = await pool.request()
+      .input("q", sql.NVarChar, `%${q}%`)
+      .input("userId", sql.Int, _userId)
+      .input("size", sql.Int, _size)
+      .input("offset", sql.Int, offset)
+      .query(`
+        SELECT
+          m.moduleId,
+          m.name,
+          m.icon,
+          m.description,
+          um.role
+        FROM dbo.Modules m
+        LEFT JOIN dbo.UserModules um
+          ON um.moduleId = m.moduleId AND um.userId = @userId
+        WHERE (@q = '%%' OR m.name LIKE @q OR m.description LIKE @q)
+        ORDER BY m.moduleId ASC
+        OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
+      `);
+
+    const data = rData.recordset.map(row => {
+      let allowedRoles = [];
+      if (row.role === "admin") {
+        allowedRoles = ["admin", "user"];
+      } else if (row.role === "user") {
+        allowedRoles = ["user"];
+      }
+      return {
+        moduleId: row.moduleId,
+        name: row.name,
+        icon: row.icon,
+        description: row.description,
+        allowedRoles
+      };
+    });
+
+    return res.json({
+      success: true,
+      data,
+      pagination: { page: _page, pageSize: _size, total }
+    });
+  } catch (err) {
+    console.error("❌ /api/users/:userId/modules-roles error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+////////////////////////////////
+app.post('/refresh', async (req, res) => {
+  try {
+    const rt = req.cookies?.refresh_token;
+    if (!rt) return res.status(401).json({ success: false, message: 'Missing refresh token' });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(rt, process.env.JWT_REFRESH_SECRET); // { userID, iat, exp }
+    } catch {
+      return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    }
+
+    const pool = await poolPromise;
+    const r = await pool.request()
+      .input('userID', sql.Int, decoded.userID)
+      .input('token', sql.NVarChar, rt)
+      .query(`SELECT TOP 1 * FROM dbo.RefreshTokens WHERE userID=@userID AND token=@token AND isRevoked=0 AND expiresAt>SYSDATETIME()`);
+
+    const row = r.recordset[0];
+    if (!row) return res.status(401).json({ success: false, message: 'Refresh token not found/expired' });
+
+    // (Optional) rotate refresh token
+    await pool.request()
+      .input('id', sql.Int, row.id)
+      .query(`UPDATE dbo.RefreshTokens SET isRevoked=1 WHERE id=@id`);
+
+    const newRT = signRefreshToken({ userID: decoded.userID });
+    const exp = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
+    await pool.request()
+      .input('userID', sql.Int, decoded.userID)
+      .input('token', sql.NVarChar, newRT)
+      .input('expiresAt', sql.DateTime2, exp)
+      .query(`INSERT INTO dbo.RefreshTokens(userID, token, expiresAt) VALUES (@userID, @token, @expiresAt)`);
+
+    // Lấy lại thông tin user (role..)
+    const ru = await pool.request()
+      .input('userID', sql.Int, decoded.userID)
+      .query(`SELECT TOP 1 userID, username, role, fullName FROM dbo.Users WHERE userID=@userID AND isActive=1`);
+
+    const u = ru.recordset[0];
+    if (!u) return res.status(401).json({ success: false, message: 'User disabled' });
+
+    const accessToken = signAccessToken({ userID: u.userID, username: u.username, role: u.role, fullName: u.fullName });
+
+    setRefreshCookie(res, newRT);
+    return res.json({ success: true, data: { accessToken } });
+  } catch (e) {
+    console.error('refresh error', e);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.post('/auth/logout', async (req, res) => {
+  try {
+    const rt = req.cookies?.refresh_token;
+    if (rt) {
+      const { poolPromise, sql } = require('./db');
+      const pool = await poolPromise;
+      await pool.request()
+        .input('token', sql.NVarChar, rt)
+        .query(`UPDATE dbo.RefreshTokens SET isRevoked=1 WHERE token=@token`);
+    }
+    res.clearCookie('refresh_token', { path: '/auth/refresh' });
+    return res.json({ success: true });
+  } catch {
+    return res.json({ success: true });
+  }
+});
+
+
+/** ******************************************** */
+
+// GET /api/trash-bins/:id/details
+app.get('/api/trash-bins/:code/details', async (req, res) => {
+  const trashBinCode = req.params.code;
+
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('trashBinCode', sql.NVarChar(100), trashBinCode)
+      .query(`
+        SELECT
+          tb.trashBinID,
+          tb.trashBinCode,
+          d.departmentName,
+          u.unitName,
+          tt.trashName,
+          tb.stringJsonCodeQr,
+          tb.createdAt, tb.createdBy,
+          tb.updatedAt, tb.updatedBy
+        FROM dbo.TrashBins tb
+        LEFT JOIN dbo.Departments d ON d.departmentID = tb.departmentID
+        LEFT JOIN dbo.Units       u ON u.unitID       = tb.unitID
+        LEFT JOIN dbo.TrashTypes  tt ON tt.trashTypeID= tb.trashTypeID
+        WHERE tb.trashBinCode = @trashBinCode
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Không tìm thấy trashBinCode' });
+    }
+
+    return res.json({ data: result.recordset[0] });
+  } catch (err) {
+    console.error('Lỗi lấy chi tiết thùng rác:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/trash-bins/active  → lấy danh sách đã JOIN (chỉ isActive=1 theo VIEW)
+app.get('/api/trash-bins/active', async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || '20', 10), 1), 200);
+
+    const q = (req.query.q || '').toString().trim(); // search trashBinCode
+    const departmentId = req.query.departmentId ? parseInt(req.query.departmentId, 10) : null;
+    const unitId       = req.query.unitId ? parseInt(req.query.unitId, 10) : null;
+    const trashTypeId  = req.query.trashTypeId ? parseInt(req.query.trashTypeId, 10) : null;
+
+    const offset = (page - 1) * pageSize;
+
+    const pool = await poolPromise;
+
+    // COUNT
+    const countReq = pool.request()
+      .input('q', sql.NVarChar(200), q ? `%${q}%` : null)
+      .input('departmentId', sql.Int, Number.isInteger(departmentId) ? departmentId : null)
+      .input('unitId',       sql.Int, Number.isInteger(unitId) ? unitId : null)
+      .input('trashTypeId',  sql.Int, Number.isInteger(trashTypeId) ? trashTypeId : null);
+
+    const countSql = `
+      SELECT COUNT(*) AS total
+      FROM dbo.v_ActiveTrashBins t
+      WHERE (@q IS NULL OR t.trashBinCode LIKE @q)
+        AND (@departmentId IS NULL OR t.departmentID = @departmentId)
+        AND (@unitId       IS NULL OR t.unitID       = @unitId)
+        AND (@trashTypeId  IS NULL OR t.trashTypeID  = @trashTypeId);
+    `;
+    const total = (await countReq.query(countSql)).recordset?.[0]?.total || 0;
+
+    // PAGE DATA
+    const dataReq = pool.request()
+      .input('q', sql.NVarChar(200), q ? `%${q}%` : null)
+      .input('departmentId', sql.Int, Number.isInteger(departmentId) ? departmentId : null)
+      .input('unitId',       sql.Int, Number.isInteger(unitId) ? unitId : null)
+      .input('trashTypeId',  sql.Int, Number.isInteger(trashTypeId) ? trashTypeId : null)
+      .input('offset', sql.Int, offset)
+      .input('fetch',  sql.Int, pageSize);
+
+    const dataSql = `
+      SELECT
+        trashBinID, trashBinCode, departmentID, unitID, trashTypeID,
+        qrLink, isActive, stringJsonCodeQr,
+        createdAt, createdBy, updatedAt, updatedBy,
+        departmentName, unitName, trashName
+      FROM dbo.v_ActiveTrashBins t
+      WHERE (@q IS NULL OR t.trashBinCode LIKE @q)
+        AND (@departmentId IS NULL OR t.departmentID = @departmentId)
+        AND (@unitId       IS NULL OR t.unitID       = @unitId)
+        AND (@trashTypeId  IS NULL OR t.trashTypeID  = @trashTypeId)
+      ORDER BY t.trashBinID DESC
+      OFFSET @offset ROWS FETCH NEXT @fetch ROWS ONLY;
+    `;
+    const pageData = (await dataReq.query(dataSql)).recordset || [];
+
+    res.json({
+      data: pageData,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(Math.ceil(total / pageSize), 1),
+      },
+    });
+  } catch (err) {
+    console.error('GET /trash-bins/active error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+// PUT /api/trash-bins/:id  → chỉnh sửa (ví dụ: qrLink, trashBinCode)
+app.put('/api/trash-bins/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID không hợp lệ' });
+
+    let { qrLink } = req.body || {};
+    // sanitize chuỗi (tránh EPARAM Invalid string)
+    const clean = (v, max = 500) => (typeof v === 'string'
+      ? v.replace(/\u0000/g, '').trim().slice(0, max)
+      : null);
+
+    qrLink = clean(qrLink, 500);
+
+    const pool = await poolPromise;
+    const reqDb = pool.request()
+      .input('id', sql.Int, id)
+      .input('qrLink', sql.NVarChar(500), qrLink);
+
+    const rs = await reqDb.query(`
+      UPDATE dbo.TrashBins
+      SET
+        qrLink = COALESCE(@qrLink, qrLink),
+        updatedAt = SYSDATETIME()
+      WHERE trashBinID = @id;
+
+      SELECT TOP 1
+        tb.trashBinID, tb.trashBinCode, tb.departmentID, tb.unitID, tb.trashTypeID,
+        tb.qrLink, tb.isActive, tb.stringJsonCodeQr,
+        tb.createdAt, tb.createdBy, tb.updatedAt, tb.updatedBy,
+        d.departmentName, u.unitName, tt.trashName
+      FROM dbo.TrashBins tb
+      LEFT JOIN dbo.Departments d ON d.departmentID = tb.departmentID
+      LEFT JOIN dbo.Units       u ON u.unitID       = tb.unitID
+      LEFT JOIN dbo.TrashTypes  tt ON tt.trashTypeID= tb.trashTypeID
+      WHERE tb.trashBinID = @id;
+    `);
+
+    res.json({ data: rs.recordset?.[0] || null });
+  } catch (err) {
+    console.error('PUT /trash-bins/:id error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/trash-bins/:id  → xoá mềm (isActive = 0)
+app.delete('/api/trash-bins/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID không hợp lệ' });
+
+    const pool = await poolPromise;
+    await pool.request()
+      .input('id', sql.Int, id)
+      .query(`
+        UPDATE dbo.TrashBins
+        SET isActive = 0, updatedAt = SYSDATETIME(), updatedBy = N'webapp'
+        WHERE trashBinID = @id;
+      `);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /trash-bins/:id error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Departments (active hoặc NULL coi như active nếu cần)
+app.get('/api/lookups/qr/departments', async (req, res) => {
+  try {
+    // mặc định 26/08/2025 -> dùng ISO tránh lỗi locale
+    const minDateStr = (req.query.minDate || '2025-08-26').toString();
+
+    // validate YYYY-MM-DD
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(minDateStr)) {
+      return res.status(400).json({ error: 'minDate must be YYYY-MM-DD' });
+    }
+
+    const pool = await poolPromise;
+    const rs = await pool.request()
+      .input('minDate', sql.Date, minDateStr)
+      .query(`
+        SELECT departmentID, departmentName
+        FROM dbo.Departments
+        WHERE CONVERT(date, ISNULL(updatedAt, createdAt)) > @minDate
+        ORDER BY departmentName;
+      `);
+
+    res.json(rs.recordset || []);
+  } catch (e) {
+    console.error('GET /lookups/departments', e);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Units (tuỳ chọn lọc theo departmentId)
+app.get('/api/lookups/qr/units', async (req, res) => {
+  try {
+    const departmentId = req.query.departmentId ? parseInt(req.query.departmentId, 10) : null;
+    const minDateStr = (req.query.minDate || '2025-08-26').toString();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(minDateStr)) {
+      return res.status(400).json({ error: 'minDate must be YYYY-MM-DD' });
+    }
+    const pool = await poolPromise;
+    const r = await pool.request()
+      .input('departmentId', sql.Int, Number.isInteger(departmentId) ? departmentId : null)
+      .input('minDate', sql.Date, minDateStr)
+      .query(`
+        SELECT unitID, unitName, departmentID
+        FROM dbo.Units
+        WHERE (@departmentId IS NULL OR departmentID = @departmentId)
+          AND CONVERT(date, ISNULL(updatedAt, createdAt)) > @minDate
+        ORDER BY unitName;
+      `);
+    res.json(r.recordset || []);
+  } catch (e) {
+    console.error('GET /lookups/units', e);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Trash types
+app.get('/api/lookups/qr/trash-types', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const rs = await pool.request().query(`
+      SELECT trashTypeID, trashName
+      FROM dbo.TrashTypes
+      ORDER BY trashName;
+    `);
+    res.json(rs.recordset || []);
+  } catch (e) {
+    console.error('GET /lookups/trash-types', e);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+//----------------------------
+
+app.get("/api/org/qr-map", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    const depRs = await pool.request().query(`
+      SELECT d.departmentID, d.departmentName
+      FROM dbo.Departments d
+      WHERE d.createdAt >= '2025-08-26'
+      ORDER BY d.departmentName;
+    `);
+
+    // Lấy unit + qrCount + qrThumbsJson (TOP 3 link QR mới nhất)
+    const unitRs = await pool.request().query(`
+      SELECT
+        u.unitID, u.unitName, u.departmentID,
+        COUNT(tb.trashBinID) AS qrCount,
+        (
+          SELECT TOP (3)
+            tb2.qrLink
+          FROM dbo.TrashBins tb2
+          WHERE tb2.unitID = u.unitID
+            AND COALESCE(tb2.isActive,1) = 1
+            AND tb2.qrLink IS NOT NULL
+          ORDER BY tb2.updatedAt DESC, tb2.trashBinID DESC
+          FOR JSON PATH
+        ) AS qrThumbsJson
+      FROM dbo.Units u
+      LEFT JOIN dbo.TrashBins tb
+        ON tb.unitID = u.unitID
+        AND COALESCE(tb.isActive,1) = 1
+      GROUP BY u.unitID, u.unitName, u.departmentID
+      ORDER BY u.unitName;
+    `);
+
+    // build map Department -> Units[]
+    const deps = (depRs.recordset || []).map(d => ({ ...d, units: [] }));
+    const byDep = new Map(deps.map(d => [d.departmentID, d]));
+
+    for (const row of unitRs.recordset || []) {
+      let thumbs = [];
+      if (row.qrThumbsJson) {
+        try { thumbs = JSON.parse(row.qrThumbsJson).map(o => o.qrLink).filter(Boolean); } catch {}
+      }
+      const unit = {
+        unitID: row.unitID,
+        unitName: row.unitName,
+        departmentID: row.departmentID,
+        qrCount: row.qrCount,
+        qrThumbs: thumbs,
+      };
+      const dep = byDep.get(row.departmentID);
+      if (dep) dep.units.push(unit);
+    }
+
+    res.json({ data: deps });
+  } catch (e) {
+    console.error("GET /api/org/qr-map", e);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// routes/org.js  (bổ sung)
+app.get("/api/org/unit/:unitId/qrs", async (req, res) => {
+  const unitId = parseInt(req.params.unitId, 10);
+  if (!Number.isInteger(unitId)) return res.status(400).json({ error: "unitId không hợp lệ" });
+
+  try {
+    const pool = await poolPromise;
+    const rs = await pool.request()
+      .input("unitId", sql.Int, unitId)
+      .query(`
+        SELECT tb.trashBinID, tb.trashBinCode, tb.qrLink
+        FROM dbo.TrashBins tb
+        WHERE tb.unitID = @unitId
+          AND COALESCE(tb.isActive,1) = 1
+          AND tb.qrLink IS NOT NULL
+        ORDER BY tb.updatedAt DESC, tb.trashBinID DESC;
+      `);
+
+    res.json({ data: rs.recordset || [] });
+  } catch (e) {
+    console.error("GET /api/org/unit/:unitId/qrs", e);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
+// routes/org.js (tiếp)
+app.patch("/api/org/move-unit", async (req, res) => {
+  const { unitId, toDepartmentId, cascadeTrashBins = true, updatedBy = null } = req.body || {};
+  if (!Number.isInteger(unitId) || !Number.isInteger(toDepartmentId)) {
+    return res.status(400).json({ error: "unitId và toDepartmentId phải là số nguyên." });
+  }
+
+  const pool = await poolPromise;
+  const tx = new sql.Transaction(pool);
+
+  try {
+    await tx.begin();
+
+    const reqTx = new sql.Request(tx);
+
+    // Kiểm tra tồn tại
+    const chk = await reqTx
+      .input("unitId", sql.Int, unitId)
+      .input("toDep", sql.Int, toDepartmentId)
+      .query(`
+        SELECT TOP 1 unitID FROM dbo.Units WHERE unitID = @unitId;
+        SELECT TOP 1 departmentID FROM dbo.Departments WHERE departmentID = @toDep;
+      `);
+
+    if (chk.recordsets[0].length === 0) throw new Error("Unit không tồn tại");
+    if (chk.recordsets[1].length === 0) throw new Error("Department đích không tồn tại");
+
+    // Cập nhật Units.departmentID
+    await reqTx
+      .input("unitId2", sql.Int, unitId)
+      .input("toDep2", sql.Int, toDepartmentId)
+      .input("updatedBy", sql.NVarChar(100), updatedBy)
+      .query(`
+        UPDATE dbo.Units
+        SET departmentID = @toDep2,
+            updatedAt = GETDATE(),
+            updatedBy = @updatedBy
+        WHERE unitID = @unitId2;
+      `);
+
+    if (cascadeTrashBins) {
+      // Cập nhật TrashBins.departmentID cho tất cả QR thuộc unit
+      await reqTx
+        .input("unitId3", sql.Int, unitId)
+        .input("toDep3", sql.Int, toDepartmentId)
+        .input("updatedBy2", sql.NVarChar(100), updatedBy)
+        .query(`
+          UPDATE dbo.TrashBins
+          SET departmentID = @toDep3,
+              updatedAt = GETDATE(),
+              updatedBy = @updatedBy2
+          WHERE unitID = @unitId3;
+        `);
+    }
+
+    await tx.commit();
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("PATCH /api/org/move-unit", e);
+    try { await tx.rollback(); } catch {}
+    res.status(500).json({ error: e.message || "Internal Server Error" });
+  }
+});
 
 
 

@@ -74,8 +74,6 @@ function apiInkWeighing(app) {
         const weighStartDate = parseDateStrToDateSQLFormat(weighStartDateStr);
         const weighEndDate = parseDateStrToDateSQLFormat(weighEndDateStr);
 
-        console.log(weighStartDate);
-
         // Lưu vào bảng WeighingSessions
         const sessionResult = await pool.request()
             .input('hskt', sql.NVarChar, data.hskt)
