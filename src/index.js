@@ -103,6 +103,104 @@ app.get("/users/get", async (req, res) => {
   }
 });
 
+app.get('/api/lucky-gift/status', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.userID;
+
+    const pool = await poolPromise;
+    const r = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT luckyGiftClaimed
+        FROM dbo.Users
+        WHERE userID = @userId
+      `);
+
+    const row = r.recordset[0];
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy user',
+      });
+    }
+
+    const claimed = !!row.luckyGiftClaimed;
+
+    return res.json({
+      success: true,
+      data: {
+        luckyGiftClaimed: claimed,
+        canSpin: !claimed,
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/lucky-gift/status error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi lấy trạng thái quà may mắn',
+    });
+  }
+});
+
+app.post('/api/lucky-gift/claim', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.userID;
+    const { prizeKey } = req.body || {}; // dùng để log FE nếu cần
+
+    const pool = await poolPromise;
+
+    // kiểm tra đã nhận thưởng chưa
+    const check = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT luckyGiftClaimed
+        FROM dbo.Users
+        WHERE userID = @userId
+      `);
+
+    const row = check.recordset[0];
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy user',
+      });
+    }
+
+    if (row.luckyGiftClaimed) {
+      return res.status(400).json({
+        success: false,
+        message: 'Bạn đã tham gia quay quà rồi',
+      });
+    }
+
+    // cập nhật đã nhận thưởng
+    await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        UPDATE dbo.Users
+        SET luckyGiftClaimed = 1
+        WHERE userID = @userId
+      `);
+
+    const FINAL_RESULT = 'Chúc bạn may mắn lần sau';
+
+    return res.json({
+      success: true,
+      message: 'Nhận quà “thần may mắn” thành công',
+      data: {
+        luckyGiftResult: FINAL_RESULT, // chỉ trả về, KHÔNG lưu DB
+        prizeKey,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/lucky-gift/claim error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi xác nhận quà may mắn',
+    });
+  }
+});
+
 app.get("/trashbins/get-id-by-names", async (req, res) => {
   const { departmentName, unitName, trashName } = req.query;
 
@@ -1048,7 +1146,7 @@ app.post('/login', async (req, res) => {
       .input('username', sql.NVarChar, username)
       .query(`
         SELECT TOP 1
-          userID, username, passwordHash, fullName, email, role, isActive
+          userID, username, passwordHash, fullName, email, role, isActive, hasChangedPassword, firstLoginGiftClaimed
         FROM dbo.Users
         WHERE username = @username
       `);
@@ -1072,6 +1170,8 @@ app.post('/login', async (req, res) => {
       username: u.username,
       role: u.role,
       fullName: u.fullName,
+      hasChangedPassword: u.hasChangedPassword,
+      firstLoginGiftClaimed: u.firstLoginGiftClaimed,
     };
 
     const accessToken  = signAccessToken(payload);
@@ -1174,12 +1274,89 @@ app.post('/login', async (req, res) => {
           fullName: u.fullName,
           email: u.email,
           role: u.role,
+          hasChangedPassword: u.hasChangedPassword,
+          firstLoginGiftClaimed: u.firstLoginGiftClaimed,
         },
         permissions // ⬅️ TRẢ KÈM QUYỀN
       },
     });
   } catch (err) {
     console.error('login error', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.post('/api/auth/change-password-first-login', requireAuth, async (req, res) => {
+  try {
+    const { newPassword } = req.body || {};
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mật khẩu mới phải từ 6 ký tự trở lên',
+      });
+    }
+
+    const pool = await poolPromise;
+
+    // kiểm tra user & trạng thái hiện tại
+    const rUser = await pool.request()
+      .input('userID', sql.Int, req.user.userID)
+      .query(`
+        SELECT hasChangedPassword
+        FROM dbo.Users
+        WHERE userID=@userID AND ISNULL(isDeleted,0)=0;
+      `);
+
+    if (!rUser.recordset.length) {
+      return res.status(404).json({ success: false, message: 'User không tồn tại' });
+    }
+
+    const hasChangedPassword = !!rUser.recordset[0].hasChangedPassword;
+    if (hasChangedPassword) {
+      // đã đổi rồi thì không cần bắt nữa (phòng trường hợp call lại)
+      return res.json({
+        success: true,
+        data: { skipped: true },
+        message: 'Bạn đã đổi mật khẩu trước đó rồi',
+      });
+    }
+
+    const hash = await bcrypt.hash(newPassword, 10);
+
+    await pool.request()
+      .input('userID', sql.Int, req.user.userID)
+      .input('passwordHash', sql.NVarChar, hash)
+      .query(`
+        UPDATE dbo.Users
+        SET passwordHash = @passwordHash,
+            hasChangedPassword = 1,
+            updatedAt = SYSDATETIME()
+        WHERE userID=@userID;
+      `);
+
+    return res.json({ success: true, message: 'Đổi mật khẩu thành công' });
+  } catch (err) {
+    console.error('POST /api/auth/change-password-first-login error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// cần requireAuth như các API auth khác
+app.post('/api/auth/first-login-gift-claim', requireAuth, async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    await pool.request()
+      .input('userID', sql.Int, req.user.userID)
+      .query(`
+        UPDATE dbo.Users
+        SET firstLoginGiftClaimed = 1,
+            updatedAt = SYSDATETIME()
+        WHERE userID = @userID AND ISNULL(isDeleted,0)=0;
+      `);
+
+    return res.json({ success: true, message: 'Đã đánh dấu nhận quà lần đầu đăng nhập.' });
+  } catch (err) {
+    console.error('POST /api/auth/first-login-gift-claim error:', err);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -1409,9 +1586,12 @@ app.post('/api/users', async (req, res) => {
       .input('role', sql.NVarChar, role === 'admin' ? 'admin' : 'user')
       .input('isActive', sql.Bit, !!isActive)
       .input('msnv', sql.NVarChar, username)
+      .input('hasChangedPassword', sql.Bit, 0)
+      .input('luckyGiftClaimed', sql.Bit, 1)
+      .input('firstLoginGiftClaimed', sql.Bit, 0)
       .query(`
-        INSERT INTO dbo.Users (username, passwordHash, fullName, email, phone, role, isActive, msnv, createdAt)
-        VALUES (@username, @passwordHash, @fullName, @email, @phone, @role, @isActive, @msnv, SYSDATETIME());
+        INSERT INTO dbo.Users (username, passwordHash, fullName, email, phone, role, isActive, msnv, createdAt, hasChangedPassword, luckyGiftClaimed, firstLoginGiftClaimed)
+        VALUES (@username, @passwordHash, @fullName, @email, @phone, @role, @isActive, @msnv, SYSDATETIME(), @hasChangedPassword, @luckyGiftClaimed, @firstLoginGiftClaimed);
         SELECT SCOPE_IDENTITY() AS userID;
       `);
 
