@@ -60,7 +60,7 @@ app.use(cors({
     'https://master.d3q09n8s04589q.amplifyapp.com/login',
     'http://localhost:3000',
     'http://171.244.143.18:3000',
-    'http://10.84.40.150:3000',
+    'http://10.84.40.34:3000',
     'https://noibo.thuanhunglongan.com',
     'https://noibo.thuanhunglongan.com/login',
   ],
@@ -83,6 +83,8 @@ apiDryingCart(app);
 
 
 app.use('/api/task-management', require('./TaskManagement/api'));
+app.use('/api/presence', require('./presence/api'));
+app.use('/pageview', require('./pageviewRouter/api'));
 
 
 app.get("/users/get", async (req, res) => {
