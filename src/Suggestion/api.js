@@ -72,8 +72,10 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
 
     // Gửi email (giữ nguyên)
     const recipients = [
-      "dinhhuutai20023107@gmail.com",
+      "hanhchaien@yahoo.com",
+      "paul@thuanhung.group",
       "lttnguyen328@gmail.com",
+      "dinhhuutai20023107@gmail.com",
     ];
 
     const html = `

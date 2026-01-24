@@ -59,9 +59,10 @@ app.use(cors({
     'https://master.d3q09n8s04589q.amplifyapp.com',
     'https://master.d3q09n8s04589q.amplifyapp.com/login',
     'http://localhost:3000',
-    'http://171.244.143.18:3000',
+    'http://171.237.176.73:3000',
     'http://10.84.40.34:3000',
     'https://noibo.thuanhunglongan.com',
+    'http://noibo.thuanhunglongan.com',
     'https://noibo.thuanhunglongan.com/login',
   ],
   credentials: true
@@ -658,17 +659,20 @@ app.post("/trash-weighings", async (req, res) => {
       .query(`
   DECLARE @output TABLE (weighingID INT);
 
-  INSERT INTO TrashWeighings (
-    trashBinCode, userID, weighingTime, weightKg, workShift, 
-    updatedAt, updatedBy, workDate, userName
-  )
-  OUTPUT INSERTED.weighingID INTO @output
-  VALUES (
-    @trashBinCode, @userID, @weighingTime, @weightKg, @workShift,
-    @updatedAt, @updatedBy, @workDate, @userName
-  );
+DECLARE @nowVN DATETIME =
+  CONVERT(DATETIME, SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time');
 
-  SELECT * FROM @output;
+INSERT INTO TrashWeighings (
+  trashBinCode, userID, weighingTime, weightKg, workShift,
+  updatedAt, updatedBy, workDate, userName
+)
+OUTPUT INSERTED.weighingID INTO @output
+VALUES (
+  @trashBinCode, @userID, @nowVN, @weightKg, @workShift,
+  @nowVN, @updatedBy, @workDate, @userName
+);
+
+SELECT weighingID FROM @output;
       `);
 
     

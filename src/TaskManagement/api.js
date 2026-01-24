@@ -4,10 +4,14 @@ const multer = require("multer");
 const { poolPromise, sql } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
+// xoá 3 dòng này được rồi
 const { uploadToS3 } = require("../middleware/s3Upload");
-
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+//
+
+const path = require("path");
+const fs = require("fs-extra");
 
 
 // lưu file vào RAM
@@ -22,6 +26,23 @@ const upload = multer({
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
 });
+//-----------------
+
+
+function safeFileName(name = "file") {
+  return name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+}
+
+function makeFileName(originalname) {
+  const ext = path.extname(originalname || "");
+  const base = safeFileName(path.basename(originalname || "file", ext));
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}-${base}${ext}`;
+}
+
+// helper: convert latin1 -> utf8 để giữ tiếng Việt
+function toUtf8FileName(name) {
+  return Buffer.from(name, 'latin1').toString('utf8');
+}
 
 //-------------------------------- Task Project -----------------
 // POST /api/task-management/tasks
@@ -871,35 +892,50 @@ router.post('/', requireAuth, upload.array('attachments', 10), async (req, res) 
             `);
         }
 
-        // 4) Upload file lên S3 + ghi cv_Attachments
-        const files = req.files || [];
+        // 4) Lưu file vào DISK + ghi cv_Attachments
+const files = req.files || [];
+const uploadRoot = process.env.UPLOAD_ROOT || "D:/uploads";
+const publicBaseUrl = process.env.PUBLIC_BASE_URL || "https://api.thuanhunglongan.com";
 
-        for (const file of files) {
-          const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-          const key = `tasks/${taskId}/${Date.now()}-${safeName}`;
+for (const file of files) {
+  // Ví dụ muốn lưu theo taskId (khuyến nghị)
+  const relDir = `/uploads/images/task/${taskId}`; 
+  const absDir = path.join(uploadRoot, "images", "task", String(taskId));
 
-          const { key: s3Key } = await uploadToS3({
-            buffer: file.buffer,
-            key,
-            contentType: file.mimetype,
-          });
+  await fs.ensureDir(absDir);
 
-          await new sql.Request(tx)
-            .input('taskId', sql.Int, taskId)
-            .input('fileName', sql.NVarChar(255), file.originalname)
-            .input('mimeType', sql.NVarChar(100), file.mimetype)
-            .input('fileSize', sql.BigInt, file.size)
-            .input('storagePath', sql.NVarChar(500), s3Key)
-            .input('uploadedBy', sql.Int, req.user.userID)
-            .query(`
-              INSERT INTO dbo.cv_Attachments
-                (taskId, fileName, mimeType, fileSize, storagePath,
-                 uploadedBy, uploadedAt, isDeleted, createdBy, createdAt)
-              VALUES
-                (@taskId, @fileName, @mimeType, @fileSize, @storagePath,
-                 @uploadedBy, GETDATE(), 0, @uploadedBy, GETDATE());
-            `);
-        }
+  const filename = toUtf8FileName(file.originalname);
+  const absPath = path.join(absDir, filename);
+
+  await fs.ensureDir(absDir);
+  await fs.access(absDir, fs.constants.W_OK); // nếu lỗi => không có quyền ghi
+
+  // ghi file từ RAM ra ổ cứng
+  await fs.writeFile(absPath, file.buffer);
+
+  // đường dẫn lưu DB (khuyến nghị lưu RELATIVE để sau này đổi domain dễ)
+  const storagePath = `${relDir}/${filename}`; 
+  const fileUrl = `${publicBaseUrl}${storagePath}`;
+
+  await new sql.Request(tx)
+    .input("taskId", sql.Int, taskId)
+    .input("fileName", sql.NVarChar(255), filename)
+    .input("mimeType", sql.NVarChar(100), file.mimetype)
+    .input("fileSize", sql.BigInt, file.size)
+    .input("storagePath", sql.NVarChar(500), storagePath) // <-- đổi từ s3Key sang local path
+    .input("uploadedBy", sql.Int, req.user.userID)
+    .query(`
+      INSERT INTO dbo.cv_Attachments
+        (taskId, fileName, mimeType, fileSize, storagePath,
+         uploadedBy, uploadedAt, isDeleted, createdBy, createdAt)
+      VALUES
+        (@taskId, @fileName, @mimeType, @fileSize, @storagePath,
+         @uploadedBy, GETDATE(), 0, @uploadedBy, GETDATE());
+    `);
+
+  // Nếu bạn muốn trả URL ngay cho FE thì có thể push vào mảng
+  // uploadedUrls.push(fileUrl);
+}
 
         await tx.commit();
         return res.status(201).json({
@@ -1266,11 +1302,6 @@ function normalizeTimeToSql(t) {
   hh = String(hh).padStart(2, '0');
   mm = String(mm).padStart(2, '0');
   return `${hh}:${mm}:00`;
-}
-
-// helper: convert latin1 -> utf8 để giữ tiếng Việt
-function toUtf8FileName(name) {
-  return Buffer.from(name, 'latin1').toString('utf8');
 }
 
 router.post('/:taskId/attachments', requireAuth, upload.array('files', 10), async (req, res) => {
