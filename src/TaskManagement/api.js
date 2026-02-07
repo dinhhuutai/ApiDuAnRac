@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require("multer");
 const { poolPromise, sql } = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const crypto = require("crypto");
 
 // xoá 3 dòng này được rồi
 const { uploadToS3 } = require("../middleware/s3Upload");
@@ -42,6 +43,22 @@ function makeFileName(originalname) {
 // helper: convert latin1 -> utf8 để giữ tiếng Việt
 function toUtf8FileName(name) {
   return Buffer.from(name, 'latin1').toString('utf8');
+}
+
+// sanitize file name (giữ unicode, bỏ ký tự gây lỗi)
+function sanitizeFileName(name) {
+  const s = String(name || "file").replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+  return s.length > 180 ? s.slice(0, 180) : s;
+}
+
+function makeSafeStoredName(originalName) {
+  const clean = toUtf8FileName(originalName);
+  const ext = getExtLower(clean) || "";
+  const base = clean.replace(new RegExp(`${ext}$`, "i"), "");
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
+  const rand = crypto.randomBytes(4).toString("hex"); // 8 chars
+  // ví dụ: 20260204_101530123_ab12cd34_report.pdf
+  return `${stamp}_${rand}_${base}${ext}`.replace(/\s+/g, "_");
 }
 
 //-------------------------------- Task Project -----------------
@@ -760,6 +777,33 @@ function normalizeTime(t) {
   return `${hh}:${mm}:00`; // "HH:mm:00"
 }
 
+function getExtLower(filename) {
+  return path.extname(filename || "").toLowerCase();
+}
+
+// Chặn một số mime cực nguy hiểm (tuỳ bạn mở rộng)
+const BLOCKED_MIMES = new Set([
+  "application/x-msdownload", // .exe
+  "application/x-msdos-program",
+  "application/x-sh",
+  "application/x-bat",
+  "application/x-powershell",
+  "application/x-dosexec",
+]);
+
+// Chặn theo đuôi file nguy hiểm (đỡ bị giả mime)
+const BLOCKED_EXTS = new Set([
+  ".exe",
+  ".dll",
+  ".bat",
+  ".cmd",
+  ".ps1",
+  ".sh",
+  ".msi",
+  ".com",
+  ".scr",
+]);
+
 /* ========== CREATE: /api/task-management (bỏ SP, dùng query thường) ========== */
 // TẠO TASK + (tuỳ chọn) FILE ĐÍNH KÈM
 router.post('/', requireAuth, upload.array('attachments', 10), async (req, res) => {
@@ -894,35 +938,52 @@ router.post('/', requireAuth, upload.array('attachments', 10), async (req, res) 
 
         // 4) Lưu file vào DISK + ghi cv_Attachments
 const files = req.files || [];
+
 const uploadRoot = process.env.UPLOAD_ROOT || "D:/uploads";
-const publicBaseUrl = process.env.PUBLIC_BASE_URL || "https://api.thuanhunglongan.com";
+const publicBaseUrl =
+  process.env.PUBLIC_BASE_URL || "https://api.thuanhunglongan.com";
+
+let savedCount = 0;
 
 for (const file of files) {
-  // Ví dụ muốn lưu theo taskId (khuyến nghị)
-  const relDir = `/uploads/images/task/${taskId}`; 
-  const absDir = path.join(uploadRoot, "images", "task", String(taskId));
+  const ext = getExtLower(file.originalname);
+  const mime = (file.mimetype || "").toLowerCase();
+
+  // chặn file nguy hiểm
+  if (BLOCKED_MIMES.has(mime) || BLOCKED_EXTS.has(ext)) continue;
+
+  const isImage = mime.startsWith("image/");
+
+  // phân loại ảnh vs docs
+  const relDir = isImage
+    ? `/uploads/images/task/${taskId}`
+    : `/uploads/docs/task/${taskId}`;
+
+  const absDir = isImage
+    ? path.join(uploadRoot, "images", "task", String(taskId))
+    : path.join(uploadRoot, "docs", "task", String(taskId));
 
   await fs.ensureDir(absDir);
+  await fs.access(absDir, fs.constants.W_OK);
 
-  const filename = toUtf8FileName(file.originalname);
-  const absPath = path.join(absDir, filename);
+  // rename tránh trùng
+  const storedName = makeSafeStoredName(file.originalname);
+  const absPath = path.join(absDir, storedName);
 
-  await fs.ensureDir(absDir);
-  await fs.access(absDir, fs.constants.W_OK); // nếu lỗi => không có quyền ghi
-
-  // ghi file từ RAM ra ổ cứng
   await fs.writeFile(absPath, file.buffer);
 
-  // đường dẫn lưu DB (khuyến nghị lưu RELATIVE để sau này đổi domain dễ)
-  const storagePath = `${relDir}/${filename}`; 
-  const fileUrl = `${publicBaseUrl}${storagePath}`;
+  const storagePath = `${relDir}/${storedName}`;
+  // const fileUrl = `${publicBaseUrl}${storagePath}`; // nếu cần trả FE
 
+  // ✅ LƯU DB:
+  // - fileName: lưu tên gốc để hiển thị
+  // - storagePath: lưu đường dẫn file đã rename
   await new sql.Request(tx)
     .input("taskId", sql.Int, taskId)
-    .input("fileName", sql.NVarChar(255), filename)
+    .input("fileName", sql.NVarChar(255), sanitizeFileName(file.originalname))
     .input("mimeType", sql.NVarChar(100), file.mimetype)
     .input("fileSize", sql.BigInt, file.size)
-    .input("storagePath", sql.NVarChar(500), storagePath) // <-- đổi từ s3Key sang local path
+    .input("storagePath", sql.NVarChar(500), storagePath)
     .input("uploadedBy", sql.Int, req.user.userID)
     .query(`
       INSERT INTO dbo.cv_Attachments
@@ -933,15 +994,14 @@ for (const file of files) {
          @uploadedBy, GETDATE(), 0, @uploadedBy, GETDATE());
     `);
 
-  // Nếu bạn muốn trả URL ngay cho FE thì có thể push vào mảng
-  // uploadedUrls.push(fileUrl);
+  savedCount++;
 }
 
         await tx.commit();
         return res.status(201).json({
           success: true,
           message: 'Tạo công việc thành công',
-          data: { taskId, attachmentCount: (req.files || []).length },
+          data: { taskId, attachmentCount: savedCount },
         });
       } catch (e) {
         await tx.rollback();
@@ -1304,30 +1364,139 @@ function normalizeTimeToSql(t) {
   return `${hh}:${mm}:00`;
 }
 
-router.post('/:taskId/attachments', requireAuth, upload.array('files', 10), async (req, res) => {
+// router.post('/:taskId/attachments', requireAuth, upload.array('files', 10), async (req, res) => {
+//     try {
+//       const taskId = +req.params.taskId;
+//       if (!Number.isFinite(taskId) || taskId <= 0) {
+//         return res.status(400).json({ success: false, message: 'taskId không hợp lệ' });
+//       }
+
+//       if (!req.files || !req.files.length) {
+//         return res.status(400).json({ success: false, message: 'Không có file nào được gửi lên' });
+//       }
+
+//       const pool = await poolPromise;
+
+//       // Kiểm tra quyền xem task (đã được giao)
+//       const rCheck = await pool.request()
+//         .input('taskId', sql.Int, taskId)
+//         .input('userID', sql.Int, req.user.userID)
+//         .query(`
+//           SELECT 1
+//           FROM dbo.cv_Tasks t
+//           WHERE t.taskId = @taskId
+//             AND t.isDeleted = 0
+//             AND (
+//               -- user là NGƯỜI ĐƯỢC GIAO
+//               EXISTS (
+//                 SELECT 1 
+//                 FROM dbo.cv_TaskAssignees a
+//                 WHERE a.taskId = t.taskId 
+//                   AND a.userID = @userID
+//                   AND a.isDeleted = 0
+//               )
+//               -- HOẶC user là NGƯỜI TẠO
+//               OR t.createdBy = @userID
+//             );
+//         `);
+
+//       if (!rCheck.recordset.length) {
+//         return res.status(403).json({
+//           success: false,
+//           message: 'Bạn không có quyền thêm tệp cho công việc này',
+//         });
+//       }
+
+//       const uploadedBy = req.user.userID;
+//       const bucket = process.env.AWS_S3_BUCKET;
+
+//       const results = [];
+
+//       for (const file of req.files) {
+//         const originalName = toUtf8FileName(file.originalname);
+
+//         const key = `tasks/${taskId}/${Date.now()}-${Math.random()
+//           .toString(36)
+//           .slice(2)}-${file.originalname}`;
+
+//         await s3.send(
+//           new PutObjectCommand({
+//             Bucket: bucket,
+//             Key: key,
+//             Body: file.buffer,
+//             ContentType: file.mimetype,
+//           })
+//         );
+
+//         // Lưu DB
+//         const rIns = await pool.request()
+//           .input('taskId', sql.Int, taskId)
+//           .input('fileName', sql.NVarChar(500), originalName)
+//           .input('mimeType', sql.NVarChar(200), file.mimetype)
+//           .input('fileSize', sql.BigInt, file.size)
+//           .input('storagePath', sql.NVarChar(1000), key)
+//           .input('uploadedBy', sql.Int, uploadedBy)
+//           .query(`
+//             INSERT INTO dbo.cv_Attachments
+//               (taskId, fileName, mimeType, fileSize, storagePath,
+//                uploadedBy, uploadedAt, isDeleted, createdBy, createdAt)
+//             OUTPUT INSERTED.attachmentId, INSERTED.fileName, INSERTED.mimeType,
+//                    INSERTED.fileSize, INSERTED.storagePath, INSERTED.uploadedAt
+//             VALUES
+//               (@taskId, @fileName, @mimeType, @fileSize, @storagePath,
+//                @uploadedBy, GETDATE(), 0, @uploadedBy, GETDATE());
+//           `);
+
+        
+//         const row = rIns.recordset[0];
+//         // đảm bảo FE nhận đúng tên UTF-8
+//         row.fileName = originalName;
+//         results.push(row);
+//       }
+
+//       return res.json({
+//         success: true,
+//         message: 'Tải tệp lên thành công',
+//         data: results,
+//       });
+//     } catch (err) {
+//       console.error('upload attachments error:', err);
+//       res.status(500).json({ success: false, message: 'Lỗi tải tệp lên' });
+//     }
+//   }
+// );
+router.post(
+  "/:taskId/attachments",
+  requireAuth,
+  upload.array("files", 10),
+  async (req, res) => {
     try {
       const taskId = +req.params.taskId;
       if (!Number.isFinite(taskId) || taskId <= 0) {
-        return res.status(400).json({ success: false, message: 'taskId không hợp lệ' });
+        return res
+          .status(400)
+          .json({ success: false, message: "taskId không hợp lệ" });
       }
 
       if (!req.files || !req.files.length) {
-        return res.status(400).json({ success: false, message: 'Không có file nào được gửi lên' });
+        return res
+          .status(400)
+          .json({ success: false, message: "Không có file nào được gửi lên" });
       }
 
       const pool = await poolPromise;
 
-      // Kiểm tra quyền xem task (đã được giao)
-      const rCheck = await pool.request()
-        .input('taskId', sql.Int, taskId)
-        .input('userID', sql.Int, req.user.userID)
+      // ✅ Check quyền: assignee hoặc người tạo
+      const rCheck = await pool
+        .request()
+        .input("taskId", sql.Int, taskId)
+        .input("userID", sql.Int, req.user.userID)
         .query(`
           SELECT 1
           FROM dbo.cv_Tasks t
           WHERE t.taskId = @taskId
             AND t.isDeleted = 0
             AND (
-              -- user là NGƯỜI ĐƯỢC GIAO
               EXISTS (
                 SELECT 1 
                 FROM dbo.cv_TaskAssignees a
@@ -1335,7 +1504,6 @@ router.post('/:taskId/attachments', requireAuth, upload.array('files', 10), asyn
                   AND a.userID = @userID
                   AND a.isDeleted = 0
               )
-              -- HOẶC user là NGƯỜI TẠO
               OR t.createdBy = @userID
             );
         `);
@@ -1343,39 +1511,68 @@ router.post('/:taskId/attachments', requireAuth, upload.array('files', 10), asyn
       if (!rCheck.recordset.length) {
         return res.status(403).json({
           success: false,
-          message: 'Bạn không có quyền thêm tệp cho công việc này',
+          message: "Bạn không có quyền thêm tệp cho công việc này",
         });
       }
 
+      // ====== giống create task ======
+      const files = req.files || [];
+
+      const uploadRoot = process.env.UPLOAD_ROOT || "D:/uploads";
+      const publicBaseUrl =
+        process.env.PUBLIC_BASE_URL || "https://api.thuanhunglongan.com";
+
       const uploadedBy = req.user.userID;
-      const bucket = process.env.AWS_S3_BUCKET;
 
       const results = [];
+      const writtenFiles = []; // để cleanup nếu lỗi giữa chừng
 
-      for (const file of req.files) {
-        const originalName = toUtf8FileName(file.originalname);
+      for (const file of files) {
+        const ext = getExtLower(file.originalname);
+        const mime = (file.mimetype || "").toLowerCase();
 
-        const key = `tasks/${taskId}/${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2)}-${file.originalname}`;
+        // chặn file nguy hiểm
+        if (BLOCKED_MIMES.has(mime) || BLOCKED_EXTS.has(ext)) continue;
 
-        await s3.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            Body: file.buffer,
-            ContentType: file.mimetype,
-          })
-        );
+        const isImage = mime.startsWith("image/");
+
+        // phân loại ảnh vs docs
+        const relDir = isImage
+          ? `uploads/images/task/${taskId}`
+          : `uploads/docs/task/${taskId}`;
+
+        const absDir = isImage
+          ? path.join(uploadRoot, "images", "task", String(taskId))
+          : path.join(uploadRoot, "docs", "task", String(taskId));
+
+        await fs.ensureDir(absDir);
+        await fs.access(absDir, fs.constants.W_OK);
+
+        // rename tránh trùng, an toàn
+        const storedName = makeSafeStoredName(file.originalname);
+        const absPath = path.join(absDir, storedName);
+
+        await fs.writeFile(absPath, file.buffer);
+        writtenFiles.push(absPath);
+
+        const storagePath = `${relDir}/${storedName}`; // lưu DB
+        const url =
+          `${String(publicBaseUrl).replace(/\/$/, "")}/` +
+          storagePath.replace(/^\//, "");
 
         // Lưu DB
-        const rIns = await pool.request()
-          .input('taskId', sql.Int, taskId)
-          .input('fileName', sql.NVarChar(500), originalName)
-          .input('mimeType', sql.NVarChar(200), file.mimetype)
-          .input('fileSize', sql.BigInt, file.size)
-          .input('storagePath', sql.NVarChar(1000), key)
-          .input('uploadedBy', sql.Int, uploadedBy)
+        const rIns = await pool
+          .request()
+          .input("taskId", sql.Int, taskId)
+          .input(
+            "fileName",
+            sql.NVarChar(255),
+            sanitizeFileName(file.originalname)
+          )
+          .input("mimeType", sql.NVarChar(100), file.mimetype)
+          .input("fileSize", sql.BigInt, file.size)
+          .input("storagePath", sql.NVarChar(500), storagePath)
+          .input("uploadedBy", sql.Int, uploadedBy)
           .query(`
             INSERT INTO dbo.cv_Attachments
               (taskId, fileName, mimeType, fileSize, storagePath,
@@ -1387,21 +1584,25 @@ router.post('/:taskId/attachments', requireAuth, upload.array('files', 10), asyn
                @uploadedBy, GETDATE(), 0, @uploadedBy, GETDATE());
           `);
 
-        
         const row = rIns.recordset[0];
-        // đảm bảo FE nhận đúng tên UTF-8
-        row.fileName = originalName;
-        results.push(row);
+        results.push({
+          ...row,
+          url, // ✅ thêm url cho FE
+        });
       }
 
       return res.json({
         success: true,
-        message: 'Tải tệp lên thành công',
+        message: "Tải tệp lên thành công",
         data: results,
       });
     } catch (err) {
-      console.error('upload attachments error:', err);
-      res.status(500).json({ success: false, message: 'Lỗi tải tệp lên' });
+      console.error("upload attachments error:", err);
+
+      // nếu bạn muốn cleanup file khi lỗi, bạn cần đưa writtenFiles ra scope cao hơn
+      // (ở code trên writtenFiles nằm trong try, nên bạn có thể wrap thêm 1 try/catch nhỏ để remove)
+
+      res.status(500).json({ success: false, message: "Lỗi tải tệp lên" });
     }
   }
 );
@@ -1460,6 +1661,106 @@ router.delete('/attachments/:attachmentId', requireAuth, async (req, res) => {
   }
 });
 
+// router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) => {
+//   try {
+//     const attachmentId = +req.params.attachmentId;
+
+//     if (!Number.isFinite(attachmentId) || attachmentId <= 0) {
+//       return res.status(400).json({ success: false, message: "attachmentId không hợp lệ" });
+//     }
+
+//     const pool = await poolPromise;
+//     const rAtt = await pool.request()
+//       .input("attachmentId", sql.Int, attachmentId)
+//       .input("userID", sql.Int, req.user.userID)
+//       .query(`
+//         SELECT TOP 1
+//           a.attachmentId,
+//           a.fileName,
+//           a.mimeType,
+//           a.storagePath
+//         FROM dbo.cv_Attachments a
+//         JOIN dbo.cv_Tasks t 
+//           ON t.taskId = a.taskId 
+//          AND t.isDeleted = 0
+//         -- 👇 join thêm: người tạo task + user đang đăng nhập
+//         LEFT JOIN dbo.Users uCreator
+//           ON uCreator.userID = t.createdBy
+//         LEFT JOIN dbo.Users uReq
+//           ON uReq.userID = @userID
+//         WHERE 
+//           a.attachmentId = @attachmentId
+//           AND a.isDeleted = 0
+//           AND (
+//             -- 1) user là người được giao
+//             EXISTS (
+//               SELECT 1 
+//               FROM dbo.cv_TaskAssignees x
+//               WHERE x.taskId = a.taskId
+//                 AND x.userID = @userID
+//                 AND x.isDeleted = 0
+//             )
+//             -- 2) HOẶC user là người tạo task
+//             OR t.createdBy = @userID
+//             -- 3) HOẶC user là QUẢN LÝ cùng phòng với người tạo
+//             OR (
+//               uCreator.cv_DepartmentId IS NOT NULL
+//               AND uReq.cv_DepartmentId = uCreator.cv_DepartmentId
+//               AND EXISTS (
+//                 SELECT 1
+//                 FROM dbo.cv_UserRoles ur
+//                 JOIN dbo.cv_Roles r 
+//                   ON r.roleId = ur.roleId
+//                  AND ISNULL(r.isDeleted, 0) = 0
+//                 WHERE ur.userId = @userID
+//                   AND ISNULL(ur.isDeleted, 0) = 0
+//                   AND r.code IN (
+//                     'truongphong',
+//                     'phophong',
+//                     'totruong',
+//                     'bangiamdoc',
+//                     'giamdocnhamay'
+//                   )
+//               )
+//             )
+              
+//             OR EXISTS (
+//               SELECT 1
+//               FROM dbo.cv_UserRoles ur
+//               JOIN dbo.cv_Roles r 
+//                 ON r.roleId = ur.roleId
+//                AND ISNULL(r.isDeleted, 0) = 0
+//               WHERE ur.userId = @userID
+//                 AND ISNULL(ur.isDeleted, 0) = 0
+//                 AND r.code IN ('bangiamdoc', 'giamdocnhamay')
+//             )
+//           );
+//       `);
+
+//     if (!rAtt.recordset.length) {
+//       return res.status(404).json({ success: false, message: "Không tìm thấy tệp hoặc không có quyền" });
+//     }
+
+//     const att = rAtt.recordset[0];
+
+//     const command = new GetObjectCommand({
+//       Bucket: process.env.AWS_S3_BUCKET,
+//       Key: att.storagePath,
+//     });
+
+//     const signedUrl = await getSignedUrl(s3, command, { expiresIn: 60 });
+
+//     return res.json({
+//       success: true,
+//       url: signedUrl,
+//       fileName: att.fileName,
+//       mimeType: att.mimeType,
+//     });
+//   } catch (err) {
+//     console.error("download attachment error:", err);
+//     res.status(500).json({ success: false, message: "Lỗi tải tệp" });
+//   }
+// });
 router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) => {
   try {
     const attachmentId = +req.params.attachmentId;
@@ -1482,7 +1783,6 @@ router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) 
         JOIN dbo.cv_Tasks t 
           ON t.taskId = a.taskId 
          AND t.isDeleted = 0
-        -- 👇 join thêm: người tạo task + user đang đăng nhập
         LEFT JOIN dbo.Users uCreator
           ON uCreator.userID = t.createdBy
         LEFT JOIN dbo.Users uReq
@@ -1491,7 +1791,6 @@ router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) 
           a.attachmentId = @attachmentId
           AND a.isDeleted = 0
           AND (
-            -- 1) user là người được giao
             EXISTS (
               SELECT 1 
               FROM dbo.cv_TaskAssignees x
@@ -1499,9 +1798,7 @@ router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) 
                 AND x.userID = @userID
                 AND x.isDeleted = 0
             )
-            -- 2) HOẶC user là người tạo task
             OR t.createdBy = @userID
-            -- 3) HOẶC user là QUẢN LÝ cùng phòng với người tạo
             OR (
               uCreator.cv_DepartmentId IS NOT NULL
               AND uReq.cv_DepartmentId = uCreator.cv_DepartmentId
@@ -1513,16 +1810,9 @@ router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) 
                  AND ISNULL(r.isDeleted, 0) = 0
                 WHERE ur.userId = @userID
                   AND ISNULL(ur.isDeleted, 0) = 0
-                  AND r.code IN (
-                    'truongphong',
-                    'phophong',
-                    'totruong',
-                    'bangiamdoc',
-                    'giamdocnhamay'
-                  )
+                  AND r.code IN ('truongphong','phophong','totruong','bangiamdoc','giamdocnhamay')
               )
             )
-              
             OR EXISTS (
               SELECT 1
               FROM dbo.cv_UserRoles ur
@@ -1542,33 +1832,369 @@ router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) 
 
     const att = rAtt.recordset[0];
 
-    const command = new GetObjectCommand({
-      Bucket: process.env.AWS_S3_BUCKET,
-      Key: att.storagePath,
-    });
+    const uploadRoot = process.env.UPLOAD_ROOT || "D:/uploads";
 
-    const signedUrl = await getSignedUrl(s3, command, { expiresIn: 60 });
+    // storagePath đang lưu kiểu: uploads/docs/task/123/file.pdf (không có domain)
+    const rel = String(att.storagePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
 
-    return res.json({
-      success: true,
-      url: signedUrl,
-      fileName: att.fileName,
-      mimeType: att.mimeType,
-    });
+    // Chỉ cho phép trong thư mục uploads/...
+    if (!rel.startsWith("uploads/")) {
+      return res.status(400).json({ success: false, message: "storagePath không hợp lệ" });
+    }
+
+    // map uploads/<...> -> <UPLOAD_ROOT>/<... (bỏ 'uploads/')>
+    const relInsideRoot = rel.replace(/^uploads\//, ""); // docs/task/...
+    const absPath = path.resolve(uploadRoot, relInsideRoot);
+
+    // chống ../ thoát ra ngoài UPLOAD_ROOT
+    const rootResolved = path.resolve(uploadRoot);
+    if (!absPath.startsWith(rootResolved + path.sep) && absPath !== rootResolved) {
+      return res.status(400).json({ success: false, message: "Đường dẫn tệp không hợp lệ" });
+    }
+
+    // kiểm tra tồn tại
+    await fs.promises.access(absPath, fs.constants.R_OK);
+
+    // set mime (tuỳ bạn, download thì không bắt buộc)
+    if (att.mimeType) res.setHeader("Content-Type", att.mimeType);
+
+    // download với tên gốc
+    return res.download(absPath, att.fileName || "download");
   } catch (err) {
     console.error("download attachment error:", err);
+
+    // nếu file không tồn tại
+    if (err?.code === "ENOENT") {
+      return res.status(404).json({ success: false, message: "Tệp không tồn tại trên server" });
+    }
+
     res.status(500).json({ success: false, message: "Lỗi tải tệp" });
   }
 });
 
 /* ========== UPDATE BASIC: /api/task-management/:taskId (PATCH) ========== */
-router.patch('/:taskId', requireAuth, async (req, res) => {
+// router.patch('/:taskId', requireAuth, async (req, res) => {
+//   try {
+//     const taskId = +req.params.taskId;
+//     if (!Number.isFinite(taskId) || taskId <= 0) {
+//       return res
+//         .status(400)
+//         .json({ success: false, message: 'taskId không hợp lệ' });
+//     }
+
+//     const {
+//       description = null,
+//       statusCode,
+//       repeatDaily = false,
+//       progressPercent = 0,
+//     } = req.body || {};
+
+//     if (!statusCode) {
+//       return res
+//         .status(400)
+//         .json({ success: false, message: 'Thiếu statusCode' });
+//     }
+
+//     const safeProgress = Number.isFinite(+progressPercent)
+//       ? Math.min(100, Math.max(0, Math.round(+progressPercent)))
+//       : 0;
+
+//     const pool = await poolPromise;
+//     const tx = new sql.Transaction(pool);
+//     await tx.begin();
+
+//     try {
+//       // 1. Lấy statusId từ code
+//       const rStatus = await new sql.Request(tx)
+//         .input('statusCode', sql.NVarChar(50), statusCode)
+//         .query(`
+//           SELECT TOP 1 statusId
+//           FROM dbo.cv_WorkflowStatuses
+//           WHERE isDeleted = 0 AND code = @statusCode;
+//         `);
+
+//       if (!rStatus.recordset.length) {
+//         await tx.rollback();
+//         return res.status(400).json({
+//           success: false,
+//           message: `Không tìm thấy trạng thái với code = '${statusCode}'`,
+//         });
+//       }
+//       const statusId = rStatus.recordset[0].statusId;
+
+//       // 2. Chỉ update mô tả, trạng thái, lặp ngày, tiến độ
+//       await new sql.Request(tx)
+//         .input('taskId', sql.Int, taskId)
+//         .input('description', sql.NVarChar(sql.MAX), description)
+//         .input('statusId', sql.Int, statusId)
+//         .input('repeatDaily', sql.Bit, repeatDaily ? 1 : 0)
+//         .input('progressPercent', sql.Int, safeProgress)
+//         .input('updatedBy', sql.Int, req.user.userID)
+//         .query(`
+//           UPDATE dbo.cv_Tasks
+//           SET
+//             description     = @description,
+//             statusId        = @statusId,
+//             repeatDaily     = @repeatDaily,
+//             progressPercent = @progressPercent,
+//             updatedBy       = @updatedBy,
+//             updatedAt       = GETDATE()
+//           WHERE taskId = @taskId
+//             AND isDeleted = 0;
+//         `);
+
+//       await tx.commit();
+//       return res.json({
+//         success: true,
+//         message: 'Cập nhật công việc thành công',
+//       });
+//     } catch (e) {
+//       await tx.rollback();
+//       console.error('task update tx error:', e);
+//       return res
+//         .status(500)
+//         .json({ success: false, message: 'Lỗi cập nhật công việc (TX)' });
+//     }
+//   } catch (err) {
+//     console.error('task update error:', err);
+//     res
+//       .status(500)
+//       .json({ success: false, message: 'Lỗi cập nhật công việc' });
+//   }
+// });
+
+// ===== 1) helper: lấy roleCode của user từ DB (trong TX) =====
+async function getTaskManagerRoleCodeTx(tx, userId) {
+  const r = await new sql.Request(tx)
+    .input("userId", sql.Int, userId)
+    .query(`
+      SELECT r.code
+      FROM dbo.cv_UserRoles ur
+      JOIN dbo.cv_Roles r
+        ON r.roleId = ur.roleId
+       AND r.isDeleted = 0
+      WHERE ur.userId = @userId
+        AND ur.isDeleted = 0;
+    `);
+
+  const codes = (r.recordset || [])
+    .map(x => (x.code || "").toLowerCase())
+    .filter(Boolean);
+
+  if (!codes.length) return ""; // chưa có role
+
+  // priority: chọn role “cao nhất”
+  const priority = {
+    bangiamdoc: 1,
+    giamdocnhamay: 2,
+    truongphong: 3,
+    phophong: 4,
+    totuong: 5,
+    nhanvien: 90,
+    thuky: 91,
+  };
+
+  codes.sort((a, b) => (priority[a] ?? 999) - (priority[b] ?? 999));
+  return codes[0];
+}
+
+// /* ========== UPDATE BASIC + ASSIGNEE: /api/task-management/:taskId (PATCH) ========== */
+// router.patch("/:taskId", requireAuth, async (req, res) => {
+//   try {
+//     const taskId = +req.params.taskId;
+//     if (!Number.isFinite(taskId) || taskId <= 0) {
+//       return res
+//         .status(400)
+//         .json({ success: false, message: "taskId không hợp lệ" });
+//     }
+
+//     const {
+//       description = null,
+//       statusCode,
+//       repeatDaily = false,
+//       progressPercent = 0,
+//       assigneeUserId, // 👈 NEW (optional)
+//     } = req.body || {};
+
+//     if (!statusCode) {
+//       return res
+//         .status(400)
+//         .json({ success: false, message: "Thiếu statusCode" });
+//     }
+
+//     const safeProgress = Number.isFinite(+progressPercent)
+//       ? Math.min(100, Math.max(0, Math.round(+progressPercent)))
+//       : 0;
+
+//     const wantChangeAssignee =
+//       typeof assigneeUserId !== "undefined" && assigneeUserId !== null;
+
+//     const newAssigneeId = wantChangeAssignee ? +assigneeUserId : null;
+
+//     if (wantChangeAssignee && (!Number.isFinite(newAssigneeId) || newAssigneeId <= 0)) {
+//       return res
+//         .status(400)
+//         .json({ success: false, message: "assigneeUserId không hợp lệ" });
+//     }
+
+//     const pool = await poolPromise;
+//     const tx = new sql.Transaction(pool);
+//     await tx.begin();
+
+//     try {
+//       /* ========= 0. LẤY TASK + CHECK NGƯỜI TẠO ========= */
+//       const rTask = await new sql.Request(tx)
+//         .input("taskId", sql.Int, taskId)
+//         .query(`
+//           SELECT taskId, createdBy
+//           FROM dbo.cv_Tasks
+//           WHERE taskId = @taskId AND isDeleted = 0;
+//         `);
+
+//       if (!rTask.recordset.length) {
+//         await tx.rollback();
+//         return res
+//           .status(404)
+//           .json({ success: false, message: "Không tìm thấy công việc" });
+//       }
+
+//       const task = rTask.recordset[0];
+//       const isCreator = task.createdBy === req.user.userID;
+
+//       /* ========= 1. CHECK ROLE ĐƯỢC PHÉP GIAO ========= */
+//       const allowedAssignRoles = [
+//         "bangiamdoc",
+//         "giamdocnhamay",
+//         "truongphong",
+//         "phophong",
+//         "totruong",
+//       ];
+
+//       // roleCode bạn đã dùng ở FE → backend lấy từ user
+//       const roleCode = await getTaskManagerRoleCodeTx(tx, req.user.userID);
+//       const canAssignByRole = allowedAssignRoles.includes(roleCode);
+
+//       const canChangeAssignee = isCreator && canAssignByRole;
+
+//       /* ========= 2. LẤY statusId ========= */
+//       const rStatus = await new sql.Request(tx)
+//         .input("statusCode", sql.NVarChar(50), statusCode)
+//         .query(`
+//           SELECT TOP 1 statusId
+//           FROM dbo.cv_WorkflowStatuses
+//           WHERE isDeleted = 0 AND code = @statusCode;
+//         `);
+
+//       if (!rStatus.recordset.length) {
+//         await tx.rollback();
+//         return res.status(400).json({
+//           success: false,
+//           message: `Không tìm thấy trạng thái với code = '${statusCode}'`,
+//         });
+//       }
+
+//       const statusId = rStatus.recordset[0].statusId;
+
+//       /* ========= 3. UPDATE TASK (như cũ) ========= */
+//       await new sql.Request(tx)
+//         .input("taskId", sql.Int, taskId)
+//         .input("description", sql.NVarChar(sql.MAX), description)
+//         .input("statusId", sql.Int, statusId)
+//         .input("repeatDaily", sql.Bit, repeatDaily ? 1 : 0)
+//         .input("progressPercent", sql.Int, safeProgress)
+//         .input("updatedBy", sql.Int, req.user.userID)
+//         .query(`
+//           UPDATE dbo.cv_Tasks
+//           SET
+//             description     = @description,
+//             statusId        = @statusId,
+//             repeatDaily     = @repeatDaily,
+//             progressPercent = @progressPercent,
+//             updatedBy       = @updatedBy,
+//             updatedAt       = GETDATE()
+//           WHERE taskId = @taskId
+//             AND isDeleted = 0;
+//         `);
+
+//       /* ========= 4. ĐỔI NGƯỜI ĐƯỢC GIAO (NẾU CÓ) ========= */
+//       if (wantChangeAssignee) {
+//         if (!canChangeAssignee) {
+//           await tx.rollback();
+//           return res.status(403).json({
+//             success: false,
+//             message:
+//               "Chỉ người tạo công việc và có quyền quản lý mới được đổi người thực hiện",
+//           });
+//         }
+
+//         // lấy assignee hiện tại
+//         const rCur = await new sql.Request(tx)
+//           .input("taskId", sql.Int, taskId)
+//           .query(`
+//             SELECT TOP 1 userId
+//             FROM dbo.cv_TaskAssignees
+//             WHERE taskId = @taskId AND isDeleted = 0
+//             ORDER BY assignedAt DESC, createdAt DESC;
+//           `);
+
+//         const currentAssigneeId = rCur.recordset.length
+//           ? rCur.recordset[0].userId
+//           : null;
+
+//         // nếu đổi sang người khác
+//         if (currentAssigneeId !== newAssigneeId) {
+//           // xoá mềm assignee cũ
+//           await new sql.Request(tx)
+//             .input("taskId", sql.Int, taskId)
+//             .input("deletedBy", sql.Int, req.user.userID)
+//             .query(`
+//               UPDATE dbo.cv_TaskAssignees
+//               SET isDeleted = 1,
+//                   deletedBy = @deletedBy,
+//                   deletedAt = GETDATE()
+//               WHERE taskId = @taskId AND isDeleted = 0;
+//             `);
+
+//           // insert assignee mới
+//           await new sql.Request(tx)
+//             .input("taskId", sql.Int, taskId)
+//             .input("userId", sql.Int, newAssigneeId)
+//             .input("createdBy", sql.Int, req.user.userID)
+//             .query(`
+//               INSERT INTO dbo.cv_TaskAssignees
+//                 (taskId, userId, assignedAt, isDeleted, createdBy, createdAt)
+//               VALUES
+//                 (@taskId, @userId, GETDATE(), 0, @createdBy, GETDATE());
+//             `);
+//         }
+//       }
+
+//       await tx.commit();
+//       return res.json({
+//         success: true,
+//         message: "Cập nhật công việc thành công",
+//       });
+//     } catch (e) {
+//       await tx.rollback();
+//       console.error("task update tx error:", e);
+//       return res
+//         .status(500)
+//         .json({ success: false, message: "Lỗi cập nhật công việc (TX)" });
+//     }
+//   } catch (err) {
+//     console.error("task update error:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Lỗi cập nhật công việc" });
+//   }
+// });
+
+/* ========== UPDATE BASIC + ASSIGNEES: /api/task-management/:taskId (PATCH) ========== */
+router.patch("/:taskId", requireAuth, async (req, res) => {
   try {
-    const taskId = +req.params.taskId;
+    const taskId = Number(req.params.taskId);
     if (!Number.isFinite(taskId) || taskId <= 0) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'taskId không hợp lệ' });
+      return res.status(400).json({ success: false, message: "taskId không hợp lệ" });
     }
 
     const {
@@ -1576,26 +2202,74 @@ router.patch('/:taskId', requireAuth, async (req, res) => {
       statusCode,
       repeatDaily = false,
       progressPercent = 0,
+      assigneeUserId, // ✅ array userId (optional)
     } = req.body || {};
 
     if (!statusCode) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'Thiếu statusCode' });
+      return res.status(400).json({ success: false, message: "Thiếu statusCode" });
     }
 
     const safeProgress = Number.isFinite(+progressPercent)
       ? Math.min(100, Math.max(0, Math.round(+progressPercent)))
       : 0;
 
+    const wantChangeAssignees = typeof assigneeUserId !== "undefined"; // có gửi field assignees thì sync
+    let newAssigneeIds = null;
+
+    if (wantChangeAssignees) {
+      if (!Array.isArray(assigneeUserId)) {
+        return res.status(400).json({ success: false, message: "assignees phải là mảng" });
+      }
+
+      // lọc số hợp lệ + bỏ trùng
+      newAssigneeIds = Array.from(
+        new Set(
+          assigneeUserId
+            .map((x) => Number(x))
+            .filter((x) => Number.isFinite(x) && x > 0)
+        )
+      );
+
+      // nếu bạn muốn bắt buộc phải có ít nhất 1 người:
+      // if (newAssigneeIds.length === 0) {
+      //   return res.status(400).json({ success: false, message: "assignees không được rỗng" });
+      // }
+    }
+
     const pool = await poolPromise;
     const tx = new sql.Transaction(pool);
     await tx.begin();
 
     try {
-      // 1. Lấy statusId từ code
+      /* ========= 0) LẤY TASK + CHECK CREATOR ========= */
+      const rTask = await new sql.Request(tx)
+        .input("taskId", sql.Int, taskId)
+        .query(`
+          SELECT taskId, createdBy
+          FROM dbo.cv_Tasks
+          WHERE taskId = @taskId AND isDeleted = 0;
+        `);
+
+      if (!rTask.recordset.length) {
+        await tx.rollback();
+        return res.status(404).json({ success: false, message: "Không tìm thấy công việc" });
+      }
+
+      const task = rTask.recordset[0];
+      const isCreator = Number(task.createdBy) === Number(req.user.userID);
+
+      /* ========= 1) CHECK ROLE ĐƯỢC PHÉP GIAO ========= */
+      const allowedAssignRoles = ["bangiamdoc", "giamdocnhamay", "truongphong", "phophong", "totruong"];
+
+      const roleCodeRaw = await getTaskManagerRoleCodeTx(tx, req.user.userID); // ✅ bạn đã dùng
+      const roleCode = String(roleCodeRaw || "").toLowerCase();
+
+      const canAssignByRole = allowedAssignRoles.includes(roleCode);
+      const canChangeAssignees = isCreator && canAssignByRole;
+
+      /* ========= 2) LẤY statusId ========= */
       const rStatus = await new sql.Request(tx)
-        .input('statusCode', sql.NVarChar(50), statusCode)
+        .input("statusCode", sql.NVarChar(50), statusCode)
         .query(`
           SELECT TOP 1 statusId
           FROM dbo.cv_WorkflowStatuses
@@ -1609,16 +2283,17 @@ router.patch('/:taskId', requireAuth, async (req, res) => {
           message: `Không tìm thấy trạng thái với code = '${statusCode}'`,
         });
       }
+
       const statusId = rStatus.recordset[0].statusId;
 
-      // 2. Chỉ update mô tả, trạng thái, lặp ngày, tiến độ
+      /* ========= 3) UPDATE TASK ========= */
       await new sql.Request(tx)
-        .input('taskId', sql.Int, taskId)
-        .input('description', sql.NVarChar(sql.MAX), description)
-        .input('statusId', sql.Int, statusId)
-        .input('repeatDaily', sql.Bit, repeatDaily ? 1 : 0)
-        .input('progressPercent', sql.Int, safeProgress)
-        .input('updatedBy', sql.Int, req.user.userID)
+        .input("taskId", sql.Int, taskId)
+        .input("description", sql.NVarChar(sql.MAX), description)
+        .input("statusId", sql.Int, statusId)
+        .input("repeatDaily", sql.Bit, repeatDaily ? 1 : 0)
+        .input("progressPercent", sql.Int, safeProgress)
+        .input("updatedBy", sql.Int, req.user.userID)
         .query(`
           UPDATE dbo.cv_Tasks
           SET
@@ -1628,29 +2303,112 @@ router.patch('/:taskId', requireAuth, async (req, res) => {
             progressPercent = @progressPercent,
             updatedBy       = @updatedBy,
             updatedAt       = GETDATE()
-          WHERE taskId = @taskId
-            AND isDeleted = 0;
+          WHERE taskId = @taskId AND isDeleted = 0;
         `);
 
+      /* ========= 4) SYNC ASSIGNEES (MULTI + REVIVE) ========= */
+      if (wantChangeAssignees) {
+        if (!canChangeAssignees) {
+          await tx.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Chỉ người tạo công việc và có quyền quản lý mới được đổi người thực hiện",
+          });
+        }
+
+        // current ACTIVE
+        const rCur = await new sql.Request(tx)
+          .input("taskId", sql.Int, taskId)
+          .query(`
+            SELECT userId
+            FROM dbo.cv_TaskAssignees
+            WHERE taskId = @taskId AND isDeleted = 0;
+          `);
+
+        const curIds = (rCur.recordset || [])
+          .map((x) => Number(x.userId))
+          .filter((x) => Number.isFinite(x) && x > 0);
+
+        const toDelete = curIds.filter((id) => !newAssigneeIds.includes(id));
+        const toAddOrRevive = newAssigneeIds.filter((id) => !curIds.includes(id));
+
+        // 4.1) soft-delete những người bị remove
+        if (toDelete.length) {
+          const delReq = new sql.Request(tx);
+          delReq.input("taskId", sql.Int, taskId);
+          delReq.input("deletedBy", sql.Int, req.user.userID);
+          delReq.input("ids", sql.NVarChar(sql.MAX), toDelete.join(","));
+
+          await delReq.query(`
+            UPDATE dbo.cv_TaskAssignees
+            SET isDeleted = 1,
+                deletedBy = @deletedBy,
+                deletedAt = GETDATE(),
+                updatedBy = @deletedBy,
+                updatedAt = GETDATE()
+            WHERE taskId = @taskId
+              AND isDeleted = 0
+              AND userId IN (SELECT TRY_CONVERT(int, value) FROM string_split(@ids, ','));
+          `);
+        }
+
+        // 4.2) Với mỗi user mới: nếu tồn tại record cũ -> REVIVE; không có -> INSERT
+        for (const uid of toAddOrRevive) {
+          // check exists (kể cả isDeleted=1)
+          const rExist = await new sql.Request(tx)
+            .input("taskId", sql.Int, taskId)
+            .input("userId", sql.Int, uid)
+            .query(`
+              SELECT TOP 1 taskId, userId, isDeleted
+              FROM dbo.cv_TaskAssignees
+              WHERE taskId = @taskId AND userId = @userId;
+            `);
+
+          if (rExist.recordset.length) {
+            // ✅ revive
+            await new sql.Request(tx)
+              .input("taskId", sql.Int, taskId)
+              .input("userId", sql.Int, uid)
+              .input("updatedBy", sql.Int, req.user.userID)
+              .query(`
+                UPDATE dbo.cv_TaskAssignees
+                SET isDeleted = 0,
+                    assignedAt = GETDATE(),
+                    deletedBy = NULL,
+                    deletedAt = NULL,
+                    updatedBy = @updatedBy,
+                    updatedAt = GETDATE()
+                WHERE taskId = @taskId AND userId = @userId;
+              `);
+          } else {
+            // ✅ insert mới (không sợ trùng PK nữa)
+            await new sql.Request(tx)
+              .input("taskId", sql.Int, taskId)
+              .input("userId", sql.Int, uid)
+              .input("createdBy", sql.Int, req.user.userID)
+              .query(`
+                INSERT INTO dbo.cv_TaskAssignees
+                  (taskId, userId, assignedAt, isDeleted, createdBy, createdAt)
+                VALUES
+                  (@taskId, @userId, GETDATE(), 0, @createdBy, GETDATE());
+              `);
+          }
+        }
+      }
+
       await tx.commit();
-      return res.json({
-        success: true,
-        message: 'Cập nhật công việc thành công',
-      });
+      return res.json({ success: true, message: "Cập nhật công việc thành công" });
     } catch (e) {
       await tx.rollback();
-      console.error('task update tx error:', e);
-      return res
-        .status(500)
-        .json({ success: false, message: 'Lỗi cập nhật công việc (TX)' });
+      console.error("task update tx error:", e);
+      return res.status(500).json({ success: false, message: "Lỗi cập nhật công việc (TX)" });
     }
   } catch (err) {
-    console.error('task update error:', err);
-    res
-      .status(500)
-      .json({ success: false, message: 'Lỗi cập nhật công việc' });
+    console.error("task update error:", err);
+    return res.status(500).json({ success: false, message: "Lỗi cập nhật công việc" });
   }
 });
+
 
 /* ========== SOFT DELETE: /api/task-management/:taskId (DELETE) ========== */
 router.delete('/:taskId', requireAuth, async (req, res) => {

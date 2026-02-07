@@ -37,7 +37,6 @@ const { apiUtilsConvert } = require('./UtilsConvert/api');
 const { apiLunchOrder } = require('./LunchOrder/api');
 const { apiPayrollCalculation } = require('./PayrollCalculation/api');
 const { apiForm } = require('./Form/api');
-const { apiTaskManagement } = require('./TaskManagement/api');
 const { apiDryingCart } = require('./DryingCart/api');
 
 const { webPushLunchOrder } = require('./WebPush/pushRoutes');
@@ -86,7 +85,7 @@ apiDryingCart(app);
 app.use('/api/task-management', require('./TaskManagement/api'));
 app.use('/api/presence', require('./presence/api'));
 app.use('/pageview', require('./pageviewRouter/api'));
-
+app.use('/api/ink-coverage', require('./InkCoveragePercentOnFilm/api'));
 
 app.get("/users/get", async (req, res) => {
   try {
@@ -1154,7 +1153,7 @@ app.post('/login', async (req, res) => {
         SELECT TOP 1
           userID, username, passwordHash, fullName, email, role, isActive, hasChangedPassword, firstLoginGiftClaimed
         FROM dbo.Users
-        WHERE username = @username
+        WHERE username = @username AND isActive = 1
       `);
 
     const u = r.recordset[0];
