@@ -49,8 +49,16 @@ const SECRET = "Tai31072002@";
 const app = express();
 const port = process.env.PORT || 5000;
 
+const UPLOAD_ROOT = process.env.UPLOAD_ROOT || "D:/uploads";
+
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
+app.use(
+  "/uploads",
+  express.static(UPLOAD_ROOT, {
+    index: false,
+    maxAge: "7d",
+  })
+);
 
 
 app.use(cors({

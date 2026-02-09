@@ -1872,6 +1872,62 @@ router.get("/attachments/:attachmentId/download", requireAuth, async (req, res) 
   }
 });
 
+router.get(
+  "/attachments/:attachmentId/preview",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const attachmentId = +req.params.attachmentId;
+      if (!Number.isFinite(attachmentId) || attachmentId <= 0) {
+        return res.status(400).json({ success: false, message: "ID không hợp lệ" });
+      }
+
+      const pool = await poolPromise;
+      const r = await pool.request()
+        .input("attachmentId", sql.Int, attachmentId)
+        .input("userID", sql.Int, req.user.userID)
+        .query(`
+          SELECT TOP 1 fileName, mimeType, storagePath
+          FROM dbo.cv_Attachments a
+          JOIN dbo.cv_Tasks t ON t.taskId = a.taskId AND t.isDeleted = 0
+          WHERE a.attachmentId = @attachmentId
+            AND a.isDeleted = 0
+            AND (
+              EXISTS (
+                SELECT 1 FROM dbo.cv_TaskAssignees x
+                WHERE x.taskId = a.taskId
+                  AND x.userID = @userID
+                  AND x.isDeleted = 0
+              )
+              OR t.createdBy = @userID
+            )
+        `);
+
+      if (!r.recordset.length) {
+        return res.status(404).json({ success: false, message: "Không có quyền" });
+      }
+
+      const att = r.recordset[0];
+
+      const publicBaseUrl =
+        process.env.PUBLIC_BASE_URL || "https://api.thuanhunglongan.com";
+
+      const rel = String(att.storagePath).replace(/\\/g, "/").replace(/^\/+/, "");
+      const url = `${publicBaseUrl}/${rel}`;
+
+      res.json({
+        success: true,
+        url,
+        mimeType: att.mimeType,
+        fileName: att.fileName,
+      });
+    } catch (e) {
+      console.error("preview attachment error:", e);
+      res.status(500).json({ success: false, message: "Lỗi preview file" });
+    }
+  }
+);
+
 /* ========== UPDATE BASIC: /api/task-management/:taskId (PATCH) ========== */
 // router.patch('/:taskId', requireAuth, async (req, res) => {
 //   try {
