@@ -94,6 +94,7 @@ app.use('/api/task-management', require('./TaskManagement/api'));
 app.use('/api/presence', require('./presence/api'));
 app.use('/pageview', require('./pageviewRouter/api'));
 app.use('/api/ink-coverage', require('./InkCoveragePercentOnFilm/api'));
+app.use('/api/quality-inspection', require('./QualityInspection/api'));
 
 app.get("/users/get", async (req, res) => {
   try {
