@@ -33,8 +33,6 @@ router.post('/save-result', requireAuth, async (req, res) => {
       inspectionDateTime,
       result
     };
-    
-    console.log(payload);
 
     const response = await axios.post(
       `${INTERNAL_API}/api/server/backup/quality-inspection/save-result`,

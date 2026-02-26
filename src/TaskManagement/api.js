@@ -3687,10 +3687,126 @@ router.get("/admin/company/meta", requireAuth, async (req, res) => {
 });
 
 // GET /api/task-management/admin/company/users (có phân trang)
+// router.get("/admin/company/users", requireAuth, async (req, res) => {
+//   // page & pageSize từ query, default: 1 & 12
+//   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+//   const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 12, 1);
+
+//   try {
+//     const pool = await sql.connect();
+//     const request = pool.request();
+
+//     request.input("page", sql.Int, page);
+//     request.input("pageSize", sql.Int, pageSize);
+
+//     const resultUsers = await request.query(`
+//       IF OBJECT_ID('tempdb..#UsersAll') IS NOT NULL DROP TABLE #UsersAll;
+
+//       SELECT DISTINCT
+//         u.userID       AS userId,
+//         u.username,
+//         u.fullName,
+//         u.email,
+//         u.isActive,
+//         u.isDeleted,
+//         u.cv_DepartmentId AS departmentId,
+//         u.cv_TeamId       AS teamId,
+//         d.name AS departmentName,
+//         t.name AS teamName
+//       INTO #UsersAll
+//       FROM Users u
+//       INNER JOIN UserModules um ON um.userId = u.userID
+//       INNER JOIN Modules m ON m.moduleId = um.moduleId
+//       LEFT JOIN cv_Departments d ON d.departmentId = u.cv_DepartmentId AND d.isDeleted = 0
+//       LEFT JOIN cv_Teams t ON t.teamId = u.cv_TeamId AND t.isDeleted = 0
+//       WHERE 
+//         m.moduleKey = 'qlcongviec'
+//         AND u.isDeleted = 0;
+
+//       SELECT COUNT(*) AS total FROM #UsersAll;
+
+//       SELECT
+//         userId,
+//         username,
+//         fullName,
+//         email,
+//         isActive,
+//         isDeleted,
+//         departmentId,
+//         teamId,
+//         departmentName,
+//         teamName
+//       FROM #UsersAll
+//       ORDER BY fullName, username
+//       OFFSET (@page - 1) * @pageSize ROWS
+//       FETCH NEXT @pageSize ROWS ONLY;
+//     `);
+
+//     const total = resultUsers.recordsets[0][0]?.total || 0;
+//     const users = resultUsers.recordsets[1] || [];
+
+//     if (users.length === 0) {
+//       return res.json({
+//         success: true,
+//         data: [],
+//         pagination: {
+//           total,
+//           page,
+//           pageSize,
+//           totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+//         },
+//       });
+//     }
+
+//     // Lấy roles cho list userId trong page
+//     const ids = users.map((u) => u.userId).join(",");
+//     const rolesResult = await pool.request().query(`
+//       SELECT ur.userRoleId, ur.userId, ur.roleId, r.name AS roleName
+//       FROM cv_UserRoles ur
+//       INNER JOIN cv_Roles r ON r.roleId = ur.roleId AND r.isDeleted = 0
+//       WHERE ur.isDeleted = 0 AND ur.userId IN (${ids});
+//     `);
+
+//     const rolesByUser = {};
+//     rolesResult.recordset.forEach((row) => {
+//       if (!rolesByUser[row.userId]) rolesByUser[row.userId] = [];
+//       rolesByUser[row.userId].push({
+//         userRoleId: row.userRoleId,
+//         roleId: row.roleId,
+//         roleName: row.roleName,
+//       });
+//     });
+
+//     const data = users.map((u) => ({
+//       ...u,
+//       roles: rolesByUser[u.userId] || [],
+//       roleIds: (rolesByUser[u.userId] || []).map((r) => r.roleId),
+//     }));
+
+//     res.json({
+//       success: true,
+//       data,
+//       pagination: {
+//         total,
+//         page,
+//         pageSize,
+//         totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("company users error", err);
+//     res.status(500).json({ message: "Lỗi server khi lấy danh sách người dùng" });
+//   }
+// });
 router.get("/admin/company/users", requireAuth, async (req, res) => {
-  // page & pageSize từ query, default: 1 & 12
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
   const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 12, 1);
+
+  const search = (req.query.search || "").trim();
+  const departmentId = req.query.departmentId
+    ? parseInt(req.query.departmentId)
+    : null;
+  const teamId = req.query.teamId ? parseInt(req.query.teamId) : null;
 
   try {
     const pool = await sql.connect();
@@ -3698,19 +3814,21 @@ router.get("/admin/company/users", requireAuth, async (req, res) => {
 
     request.input("page", sql.Int, page);
     request.input("pageSize", sql.Int, pageSize);
+    request.input("search", sql.NVarChar, search);
+    request.input("departmentId", sql.Int, departmentId);
+    request.input("teamId", sql.Int, teamId);
 
-    const resultUsers = await request.query(`
+    const result = await request.query(`
       IF OBJECT_ID('tempdb..#UsersAll') IS NOT NULL DROP TABLE #UsersAll;
 
       SELECT DISTINCT
-        u.userID       AS userId,
+        u.userID AS userId,
         u.username,
         u.fullName,
         u.email,
         u.isActive,
-        u.isDeleted,
         u.cv_DepartmentId AS departmentId,
-        u.cv_TeamId       AS teamId,
+        u.cv_TeamId AS teamId,
         d.name AS departmentName,
         t.name AS teamName
       INTO #UsersAll
@@ -3719,31 +3837,32 @@ router.get("/admin/company/users", requireAuth, async (req, res) => {
       INNER JOIN Modules m ON m.moduleId = um.moduleId
       LEFT JOIN cv_Departments d ON d.departmentId = u.cv_DepartmentId AND d.isDeleted = 0
       LEFT JOIN cv_Teams t ON t.teamId = u.cv_TeamId AND t.isDeleted = 0
+      LEFT JOIN cv_UserRoles ur ON ur.userId = u.userID AND ur.isDeleted = 0
+      LEFT JOIN cv_Roles r ON r.roleId = ur.roleId AND r.isDeleted = 0
       WHERE 
         m.moduleKey = 'qlcongviec'
-        AND u.isDeleted = 0;
+        AND u.isDeleted = 0
+        AND (
+          @search = '' OR
+          u.fullName COLLATE Latin1_General_CI_AI LIKE '%' + @search + '%' OR
+          u.username COLLATE Latin1_General_CI_AI LIKE '%' + @search + '%' OR
+          u.email COLLATE Latin1_General_CI_AI LIKE '%' + @search + '%' OR
+          r.name COLLATE Latin1_General_CI_AI LIKE '%' + @search + '%'
+        )
+        AND (@departmentId IS NULL OR u.cv_DepartmentId = @departmentId)
+        AND (@teamId IS NULL OR u.cv_TeamId = @teamId);
 
       SELECT COUNT(*) AS total FROM #UsersAll;
 
-      SELECT
-        userId,
-        username,
-        fullName,
-        email,
-        isActive,
-        isDeleted,
-        departmentId,
-        teamId,
-        departmentName,
-        teamName
+      SELECT *
       FROM #UsersAll
       ORDER BY fullName, username
       OFFSET (@page - 1) * @pageSize ROWS
       FETCH NEXT @pageSize ROWS ONLY;
     `);
 
-    const total = resultUsers.recordsets[0][0]?.total || 0;
-    const users = resultUsers.recordsets[1] || [];
+    const total = result.recordsets[0][0]?.total || 0;
+    const users = result.recordsets[1] || [];
 
     if (users.length === 0) {
       return res.json({
@@ -3758,7 +3877,6 @@ router.get("/admin/company/users", requireAuth, async (req, res) => {
       });
     }
 
-    // Lấy roles cho list userId trong page
     const ids = users.map((u) => u.userId).join(",");
     const rolesResult = await pool.request().query(`
       SELECT ur.userRoleId, ur.userId, ur.roleId, r.name AS roleName
@@ -3794,8 +3912,8 @@ router.get("/admin/company/users", requireAuth, async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("company users error", err);
-    res.status(500).json({ message: "Lỗi server khi lấy danh sách người dùng" });
+    console.error(err);
+    res.status(500).json({ message: "Lỗi server khi lấy danh sách user" });
   }
 });
 

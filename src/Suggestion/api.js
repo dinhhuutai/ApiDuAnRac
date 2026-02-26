@@ -131,28 +131,73 @@ app.get("/api/suggestions/categories", async (req, res) => {
 
 
 // GET /api/suggestions?date=2025-07-11&categoryId=3
+// app.get("/api/suggestions", async (req, res) => {
+//   try {
+//     const pool = await poolPromise;
+//     const { date, categoryId } = req.query;
+
+//     let query = `
+//       SELECT s.*, c.name AS categoryName
+//       FROM Suggestions s
+//       JOIN SuggestionCategories c ON s.suggestionCategorieId = c.suggestionCategorieId
+//       WHERE 1 = 1
+//     `;
+
+//     if (date) {
+//       query += ` AND CONVERT(DATE, s.created_at) = @date`;
+//     }
+//     if (categoryId) {
+//       query += ` AND s.suggestionCategorieId = @categoryId`;
+//     }
+
+//     const request = pool.request();
+//     if (date) request.input("date", sql.Date, date);
+//     if (categoryId) request.input("categoryId", sql.Int, categoryId);
+
+//     const result = await request.query(query);
+
+//     res.json({ success: true, data: result.recordset });
+//   } catch (err) {
+//     console.error("Lỗi lấy góp ý:", err);
+//     res.status(500).json({ success: false, message: "Server error" });
+//   }
+// });
 app.get("/api/suggestions", async (req, res) => {
   try {
     const pool = await poolPromise;
-    const { date, categoryId } = req.query;
+    const { fromDate, toDate, categoryId } = req.query;
 
     let query = `
       SELECT s.*, c.name AS categoryName
       FROM Suggestions s
-      JOIN SuggestionCategories c ON s.suggestionCategorieId = c.suggestionCategorieId
+      JOIN SuggestionCategories c 
+        ON s.suggestionCategorieId = c.suggestionCategorieId
       WHERE 1 = 1
     `;
 
-    if (date) {
-      query += ` AND CONVERT(DATE, s.created_at) = @date`;
+    if (fromDate && toDate) {
+      query += `
+        AND CONVERT(DATE, s.created_at) 
+        BETWEEN @fromDate AND @toDate
+      `;
     }
+
     if (categoryId) {
       query += ` AND s.suggestionCategorieId = @categoryId`;
     }
 
+    query += ` ORDER BY s.created_at DESC`;
+
     const request = pool.request();
-    if (date) request.input("date", sql.Date, date);
-    if (categoryId) request.input("categoryId", sql.Int, categoryId);
+
+    if (fromDate && toDate) {
+      request.input("fromDate", sql.Date, fromDate);
+      request.input("toDate", sql.Date, toDate);
+    }
+
+    if (categoryId) {
+      request.input("categoryId", sql.Int, categoryId);
+    }
 
     const result = await request.query(query);
 
