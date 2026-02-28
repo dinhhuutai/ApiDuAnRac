@@ -3611,6 +3611,104 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
 });
 
 
+app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
+  try {
+    const { date } = req.params;
+
+    const selectedDate = new Date(date);
+
+    // 🔥 Tính thứ (2-6)
+    let dayOfWeek = selectedDate.getDay(); 
+    // JS: 0 = CN, 1 = T2...
+    if (dayOfWeek === 0) dayOfWeek = 8; // CN
+    dayOfWeek = dayOfWeek; // 2-6 sẽ giữ nguyên
+
+    // 🔥 Tính Monday của tuần
+    const diff = selectedDate.getDate() - (selectedDate.getDay() || 7) + 1;
+    const monday = new Date(selectedDate.setDate(diff))
+      .toISOString()
+      .split("T")[0];
+
+    const pool = await poolPromise;
+
+    // 1️⃣ Lấy weeklyMenu theo Monday
+    const wm = await pool.request()
+      .input("monday", sql.Date, monday)
+      .query(`
+        SELECT TOP 1 *
+        FROM dbo.dc_WeeklyMenus
+        WHERE weekStartMonday = @monday
+        ORDER BY createdAt DESC
+      `);
+
+    if (wm.recordset.length === 0) {
+      return res.json({ success: true, data: null });
+    }
+
+    const weeklyMenuId = wm.recordset[0].weeklyMenuId;
+
+    // 2️⃣ Lấy foods
+    const foods = await pool.request()
+      .input("weeklyMenuId", sql.Int, weeklyMenuId)
+      .input("dayOfWeek", sql.Int, dayOfWeek)
+      .query(`
+        SELECT f.foodId, f.foodName
+        FROM dbo.dc_WeeklyMenuEntries e
+        JOIN dbo.dc_Foods f ON e.foodId = f.foodId
+        WHERE e.weeklyMenuId = @weeklyMenuId
+          AND e.dayOfWeek = @dayOfWeek
+          AND e.statusType = 're'
+        ORDER BY e.position
+      `);
+
+    // 3️⃣ Lấy rows
+    const rows = await pool.request()
+      .input("weeklyMenuId", sql.Int, weeklyMenuId)
+      .input("dayOfWeek", sql.Int, dayOfWeek)
+      .query(`
+        SELECT 
+            ISNULL(d.departmentId, 0) AS departmentId,
+            ISNULL(d.departmentName, N'Chưa gán') AS departmentName,
+            f.foodId,
+            SUM(
+              ISNULL(s.quantity,0)
+              + ISNULL(s.quantityOvertime,0)
+              + ISNULL(s.quantityWorkShift,0)
+            ) AS totalQuantity
+        FROM dbo.dc_UserWeeklySelections s
+        JOIN dbo.dc_WeeklyMenuEntries e 
+            ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+        JOIN dbo.dc_Foods f 
+            ON e.foodId = f.foodId
+        JOIN dbo.Users u 
+            ON s.userId = u.userId
+        LEFT JOIN dbo.dc_Department d
+            ON u.dc_DepartmentID = d.departmentId
+        WHERE e.weeklyMenuId = @weeklyMenuId
+          AND e.dayOfWeek = @dayOfWeek
+          AND e.statusType = 're'
+        GROUP BY d.departmentId, d.departmentName, f.foodId
+      `);
+
+    res.json({
+      success: true,
+      data: {
+        monday,
+        dayOfWeek,
+        foods: foods.recordset,
+        rows: rows.recordset
+      }
+    });
+
+  } catch (err) {
+    console.error("Report by date error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Lỗi lấy báo cáo theo ngày"
+    });
+  }
+});
+
 
 }
 
