@@ -3610,28 +3610,38 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
   }
 });
 
-
 // app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
 //   try {
 //     const { date } = req.params;
 
+//     if (!date) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Thiếu ngày"
+//       });
+//     }
+
 //     const selectedDate = new Date(date);
 
-//     // 🔥 Tính thứ (2-6)
-//     let dayOfWeek = selectedDate.getDay(); 
-//     // JS: 0 = CN, 1 = T2...
-//     if (dayOfWeek === 0) dayOfWeek = 8; // CN
-//     dayOfWeek = dayOfWeek; // 2-6 sẽ giữ nguyên
+//     // ===== Tính thứ trong tuần (Thứ 2 = 1)
+//     let dayOfWeek = selectedDate.getDay();
+//     if (dayOfWeek === 0) dayOfWeek = 7;
 
-//     // 🔥 Tính Monday của tuần
-//     const diff = selectedDate.getDate() - (selectedDate.getDay() || 7) + 1;
+//     // ===== Tính Monday của tuần
+//     const diff =
+//       selectedDate.getDate() -
+//       (selectedDate.getDay() || 7) +
+//       1;
+
 //     const monday = new Date(selectedDate.setDate(diff))
 //       .toISOString()
 //       .split("T")[0];
 
 //     const pool = await poolPromise;
 
-//     // 1️⃣ Lấy weeklyMenu theo Monday
+//     // =====================================================
+//     // 1️⃣ LẤY WEEKLY MENU
+//     // =====================================================
 //     const wm = await pool.request()
 //       .input("monday", sql.Date, monday)
 //       .query(`
@@ -3642,27 +3652,69 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
 //       `);
 
 //     if (wm.recordset.length === 0) {
-//       return res.json({ success: true, data: null });
+//       return res.json({
+//         success: true,
+//         data: {
+//           monday,
+//           dayOfWeek,
+//           foods: [],
+//           rows: []
+//         }
+//       });
 //     }
 
 //     const weeklyMenuId = wm.recordset[0].weeklyMenuId;
 
-//     // 2️⃣ Lấy foods
-//     const foods = await pool.request()
+//     // =====================================================
+//     // 2️⃣ LẤY FOODS + BRANCH
+//     // =====================================================
+//     const foodsRaw = await pool.request()
 //       .input("weeklyMenuId", sql.Int, weeklyMenuId)
 //       .input("dayOfWeek", sql.Int, dayOfWeek)
 //       .query(`
-//         SELECT f.foodId, f.foodName
+//         SELECT 
+//           f.foodId,
+//           f.foodName,
+//           fb.branchId,
+//           fb.branchName,
+//           fb.sortOrder
 //         FROM dbo.dc_WeeklyMenuEntries e
-//         JOIN dbo.dc_Foods f ON e.foodId = f.foodId
+//         JOIN dbo.dc_Foods f 
+//             ON e.foodId = f.foodId
+//         LEFT JOIN dbo.dc_FoodBranches fb 
+//             ON f.foodId = fb.foodId
 //         WHERE e.weeklyMenuId = @weeklyMenuId
 //           AND e.dayOfWeek = @dayOfWeek
 //           AND e.statusType = 're'
-//         ORDER BY e.position
+//         ORDER BY e.position, fb.sortOrder
 //       `);
 
-//     // 3️⃣ Lấy rows
-//     const rows = await pool.request()
+//     // ===== Group food
+//     const foodMap = {};
+
+//     for (const item of foodsRaw.recordset) {
+//       if (!foodMap[item.foodId]) {
+//         foodMap[item.foodId] = {
+//           foodId: item.foodId,
+//           foodName: item.foodName,
+//           branches: []
+//         };
+//       }
+
+//       if (item.branchId) {
+//         foodMap[item.foodId].branches.push({
+//           branchId: item.branchId,
+//           branchName: item.branchName
+//         });
+//       }
+//     }
+
+//     const groupedFoods = Object.values(foodMap);
+
+//     // =====================================================
+//     // 3️⃣ LẤY ROWS (GROUP ĐÚNG THEO BRANCH)
+//     // =====================================================
+//     const rowsResult = await pool.request()
 //       .input("weeklyMenuId", sql.Int, weeklyMenuId)
 //       .input("dayOfWeek", sql.Int, dayOfWeek)
 //       .query(`
@@ -3670,6 +3722,7 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
 //             ISNULL(d.departmentId, 0) AS departmentId,
 //             ISNULL(d.departmentName, N'Chưa gán') AS departmentName,
 //             f.foodId,
+//             ISNULL(s.branchId, 0) AS branchId,  -- 🔥 LẤY TRỰC TIẾP TỪ SELECTION
 //             SUM(
 //               ISNULL(s.quantity,0)
 //               + ISNULL(s.quantityOvertime,0)
@@ -3687,24 +3740,29 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
 //         WHERE e.weeklyMenuId = @weeklyMenuId
 //           AND e.dayOfWeek = @dayOfWeek
 //           AND e.statusType = 're'
-//         GROUP BY d.departmentId, d.departmentName, f.foodId
+//         GROUP BY 
+//             d.departmentId,
+//             d.departmentName,
+//             f.foodId,
+//             s.branchId
+//         ORDER BY d.departmentName, f.foodId
 //       `);
 
-//     res.json({
+//     return res.json({
 //       success: true,
 //       data: {
 //         monday,
 //         dayOfWeek,
-//         foods: foods.recordset,
-//         rows: rows.recordset
+//         foods: groupedFoods,
+//         rows: rowsResult.recordset
 //       }
 //     });
 
 //   } catch (err) {
-//     console.error("Report by date error:", err);
-//     res.status(500).json({
+//     console.error("Report error:", err);
+//     return res.status(500).json({
 //       success: false,
-//       message: "Lỗi lấy báo cáo theo ngày"
+//       message: "Lỗi lấy báo cáo"
 //     });
 //   }
 // });
@@ -3722,11 +3780,11 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
 
     const selectedDate = new Date(date);
 
-    // ===== Tính thứ trong tuần (Thứ 2 = 1)
+    // ===== Tính thứ (Thứ 2 = 1)
     let dayOfWeek = selectedDate.getDay();
     if (dayOfWeek === 0) dayOfWeek = 7;
 
-    // ===== Tính Monday của tuần
+    // ===== Tính Monday
     const diff =
       selectedDate.getDate() -
       (selectedDate.getDay() || 7) +
@@ -3757,6 +3815,7 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
           monday,
           dayOfWeek,
           foods: [],
+          departments: [],
           rows: []
         }
       });
@@ -3765,30 +3824,44 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
     const weeklyMenuId = wm.recordset[0].weeklyMenuId;
 
     // =====================================================
-    // 2️⃣ LẤY FOODS + BRANCH
+    // 2️⃣ LẤY TẤT CẢ BỘ PHẬN
+    // =====================================================
+    const departmentsResult = await pool.request().query(`
+      SELECT departmentId, departmentName
+      FROM dbo.dc_Department
+      WHERE isAction = 1
+      ORDER BY departmentName
+    `);
+
+    const departments = departmentsResult.recordset;
+
+    // =====================================================
+    // 3️⃣ LẤY NHỮNG MÓN CÓ NGƯỜI ĐẶT TRONG NGÀY
     // =====================================================
     const foodsRaw = await pool.request()
-      .input("weeklyMenuId", sql.Int, weeklyMenuId)
-      .input("dayOfWeek", sql.Int, dayOfWeek)
-      .query(`
-        SELECT 
-          f.foodId,
-          f.foodName,
-          fb.branchId,
-          fb.branchName,
-          fb.sortOrder
-        FROM dbo.dc_WeeklyMenuEntries e
-        JOIN dbo.dc_Foods f 
-            ON e.foodId = f.foodId
-        LEFT JOIN dbo.dc_FoodBranches fb 
-            ON f.foodId = fb.foodId
-        WHERE e.weeklyMenuId = @weeklyMenuId
-          AND e.dayOfWeek = @dayOfWeek
-          AND e.statusType = 're'
-        ORDER BY e.position, fb.sortOrder
-      `);
+  .input("weeklyMenuId", sql.Int, weeklyMenuId)
+  .input("dayOfWeek", sql.Int, dayOfWeek)
+  .query(`
+    SELECT DISTINCT
+        f.foodId,
+        f.foodName,
+        e.position,
+        ISNULL(s.branchId, 0) AS branchId,
+        fb.branchName
+    FROM dbo.dc_WeeklyMenuEntries e
+    JOIN dbo.dc_UserWeeklySelections s
+        ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+    JOIN dbo.dc_Foods f 
+        ON e.foodId = f.foodId
+    LEFT JOIN dbo.dc_FoodBranches fb
+        ON s.branchId = fb.branchId
+    WHERE e.weeklyMenuId = @weeklyMenuId
+      AND e.dayOfWeek = @dayOfWeek
+      AND e.statusType = 're'
+    ORDER BY e.position ASC
+  `);
 
-    // ===== Group food
+    // ===== Group food theo branch
     const foodMap = {};
 
     for (const item of foodsRaw.recordset) {
@@ -3796,56 +3869,64 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
         foodMap[item.foodId] = {
           foodId: item.foodId,
           foodName: item.foodName,
+          position: item.position,
           branches: []
         };
       }
 
-      if (item.branchId) {
-        foodMap[item.foodId].branches.push({
-          branchId: item.branchId,
-          branchName: item.branchName
-        });
-      }
+      foodMap[item.foodId].branches.push({
+        branchId: item.branchId || 0,
+        branchName: item.branchName || null
+      });
     }
 
-    const groupedFoods = Object.values(foodMap);
+    const groupedFoods = Object.values(foodMap)
+  .sort((a, b) => a.position - b.position);
 
     // =====================================================
-    // 3️⃣ LẤY ROWS (GROUP ĐÚNG THEO BRANCH)
+    // 4️⃣ LẤY SỐ LƯỢNG THEO BỘ PHẬN + FOOD + BRANCH
     // =====================================================
     const rowsResult = await pool.request()
       .input("weeklyMenuId", sql.Int, weeklyMenuId)
       .input("dayOfWeek", sql.Int, dayOfWeek)
       .query(`
-        SELECT 
-            ISNULL(d.departmentId, 0) AS departmentId,
-            ISNULL(d.departmentName, N'Chưa gán') AS departmentName,
-            f.foodId,
-            ISNULL(s.branchId, 0) AS branchId,  -- 🔥 LẤY TRỰC TIẾP TỪ SELECTION
-            SUM(
-              ISNULL(s.quantity,0)
-              + ISNULL(s.quantityOvertime,0)
-              + ISNULL(s.quantityWorkShift,0)
-            ) AS totalQuantity
-        FROM dbo.dc_UserWeeklySelections s
-        JOIN dbo.dc_WeeklyMenuEntries e 
-            ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
-        JOIN dbo.dc_Foods f 
-            ON e.foodId = f.foodId
-        JOIN dbo.Users u 
-            ON s.userId = u.userId
-        LEFT JOIN dbo.dc_Department d
-            ON u.dc_DepartmentID = d.departmentId
-        WHERE e.weeklyMenuId = @weeklyMenuId
-          AND e.dayOfWeek = @dayOfWeek
-          AND e.statusType = 're'
-        GROUP BY 
-            d.departmentId,
-            d.departmentName,
-            f.foodId,
-            s.branchId
-        ORDER BY d.departmentName, f.foodId
-      `);
+    SELECT 
+        d.departmentId,
+        d.departmentName,
+        f.foodId,
+        e.position,
+        ISNULL(s.branchId, 0) AS branchId,
+        SUM(
+          ISNULL(s.quantity,0)
+          + ISNULL(s.quantityOvertime,0)
+          + ISNULL(s.quantityWorkShift,0)
+        ) AS totalQuantity
+    FROM dbo.dc_Department d
+    LEFT JOIN dbo.Users u 
+        ON u.dc_DepartmentID = d.departmentId
+    LEFT JOIN dbo.dc_UserWeeklySelections s
+        ON s.userId = u.userId
+    LEFT JOIN dbo.dc_WeeklyMenuEntries e 
+        ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+        AND e.weeklyMenuId = @weeklyMenuId
+        AND e.dayOfWeek = @dayOfWeek
+        AND e.statusType = 're'
+    LEFT JOIN dbo.dc_Foods f 
+        ON e.foodId = f.foodId
+    WHERE d.isAction = 1
+    GROUP BY 
+        d.departmentId,
+        d.departmentName,
+        f.foodId,
+        e.position,
+        s.branchId
+    HAVING SUM(
+          ISNULL(s.quantity,0)
+          + ISNULL(s.quantityOvertime,0)
+          + ISNULL(s.quantityWorkShift,0)
+        ) > 0
+    ORDER BY d.departmentName, e.position
+`);
 
     return res.json({
       success: true,
@@ -3853,6 +3934,7 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
         monday,
         dayOfWeek,
         foods: groupedFoods,
+        departments,
         rows: rowsResult.recordset
       }
     });

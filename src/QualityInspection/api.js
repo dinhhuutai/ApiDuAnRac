@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const { requireAuth } = require('../middleware/auth');
+const { poolPromise, sql } = require('../db');
 
 const INTERNAL_API = process.env.API_WEBAPP_NOI_BO;
 
@@ -22,12 +23,35 @@ router.post('/save-result', requireAuth, async (req, res) => {
       result
     } = req.body;
 
-    const employeeId = req.user.userID;
+    const userID = req.user.userID;
     const employeeName = req.user.username;
 
+    // ✅ LẤY msnv TỪ DATABASE
+    const pool = await poolPromise;
+
+    const userResult = await pool.request()
+      .input('userID', sql.Int, userID)
+      .query(`
+        SELECT msnv
+        FROM dbo.Users
+        WHERE userID = @userID
+          AND isDeleted = 0
+          AND isActive = 1
+      `);
+
+    if (!userResult.recordset.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy nhân viên'
+      });
+    }
+
+    const employeeId = userResult.recordset[0].msnv;
+
+    // ✅ Payload gửi internal API
     const payload = {
       inspectionType,
-      employeeId,
+      employeeId,     // 🔥 giờ là msnv
       employeeName,
       qrCode,
       inspectionDateTime,
@@ -38,7 +62,7 @@ router.post('/save-result', requireAuth, async (req, res) => {
       `${INTERNAL_API}/api/server/backup/quality-inspection/save-result`,
       payload,
       {
-        timeout: 5000,
+        timeout: 60000,
         headers: {
           'Content-Type': 'application/json',
           'X-Internal-Request': 'WEBAPP'
