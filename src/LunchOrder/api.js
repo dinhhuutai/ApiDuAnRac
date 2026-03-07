@@ -537,27 +537,116 @@ app.get("/api/weekly-menus", async (req, res) => {
 
 // POST /api/weekly-menus/:weeklyMenuId/entries
 // body: { statusType: 're'|'ws'|'ot', entries: [{ dayOfWeek, position, foodId }, ...] }
+// app.post("/api/weekly-menus/:weeklyMenuId/entries", async (req, res) => {
+//   const weeklyMenuId = Number(req.params.weeklyMenuId);
+//   const { statusType, entries } = req.body || {};
+//   if (!weeklyMenuId || !statusType || !Array.isArray(entries)) {
+//     return res.status(400).json({ success:false, message:"Bad payload" });
+//   }
+
+//   try {
+//     const pool = await poolPromise;
+//     const trx = new sql.Transaction(pool);
+//     await trx.begin();
+
+//     // XÓA HẾT theo statusType, sau đó THÊM MỚI
+//     await new sql.Request(trx)
+//       .input("weeklyMenuId", sql.Int, weeklyMenuId)
+//       .input("statusType", sql.NVarChar(20), statusType)
+//       .query(`
+//         DELETE FROM dbo.dc_WeeklyMenuEntries
+//         WHERE weeklyMenuId=@weeklyMenuId AND statusType=@statusType
+//       `);
+
+//     for (const e of entries) {
+//       await new sql.Request(trx)
+//         .input("weeklyMenuId", sql.Int, weeklyMenuId)
+//         .input("statusType", sql.NVarChar(20), statusType)
+//         .input("dayOfWeek", sql.TinyInt, e.dayOfWeek)
+//         .input("position", sql.TinyInt, e.position)
+//         .input("foodId", sql.Int, e.foodId)
+//         .query(`
+//           INSERT INTO dbo.dc_WeeklyMenuEntries
+//             (weeklyMenuId, foodId, dayOfWeek, position, statusType, isAction, isLocked, createdAt)
+//           VALUES
+//             (@weeklyMenuId, @foodId, @dayOfWeek, @position, @statusType, 1, 0, SYSUTCDATETIME())
+//         `);
+//     }
+
+//     await trx.commit();
+
+  
+// const rsW = await pool.request()
+//   .input('id', sql.Int, weeklyMenuId)
+//   .query(`SELECT TOP 1 weekStartMonday FROM dbo.dc_WeeklyMenus WHERE weeklyMenuId=@id`);
+// const monday = rsW.recordset[0]?.weekStartMonday;
+// const weekVN = monday ? new Date(monday).toLocaleDateString('vi-VN') : 'tuần mới';
+
+// // Nội dung vui nhộn + deeplink về đúng tuần & tab hiện tại
+// const bodies = [
+//   `Thực đơn ${weekVN} đã sẵn sàng! Vào đặt món kẻo hết suất ngon nha 😋`,
+//   `Đã mở thực đơn ${weekVN}! Chốt món hôm nay cho ấm bụng thôi 🥢`,
+//   `Tuần mới – món mới! Vào đặt ngay trước khi khóa menu nha 🍱`,
+//   `Chuông báo bụng reo 🔔 Menu ${weekVN} đã lên sóng, mời bạn chọn món!`,
+//   `Đặt cơm cùng đồng đội? Menu ${weekVN} vừa cập bến nè 🚀`
+// ];
+// //const body = bodies[Math.floor(Math.random() * bodies.length)];
+
+// const body = `Menu ${weekVN} đã sẵn sàng! Vào đặt món kẻo hết suất ngon nha 😋`;
+
+// // URL có thể là relative để SW mở trong cùng domain
+// const payload = {
+//   title: 'Đặt Cơm THLA – Thực đơn mới',
+//   body,
+//   url: `/lunch-order?menu=${weeklyMenuId}&tab=${statusType}`,
+//   ttl: 3600
+// };
+
+// // Gửi cho TẤT CẢ user có module = 'datcom'
+// const stats = await sendPushToUsers(payload, null);
+
+// // trả response kèm thống kê gửi
+// return res.json({ success: true, broadcast: stats });
+
+//   } catch (err) {
+//     try { await trx.rollback(); } catch {}
+//     console.error("Save entries error:", err);
+//     return res.status(500).json({ success:false, message:"Server error" });
+//   }
+// });
+
 app.post("/api/weekly-menus/:weeklyMenuId/entries", async (req, res) => {
   const weeklyMenuId = Number(req.params.weeklyMenuId);
   const { statusType, entries } = req.body || {};
+
   if (!weeklyMenuId || !statusType || !Array.isArray(entries)) {
-    return res.status(400).json({ success:false, message:"Bad payload" });
+    return res.status(400).json({ success: false, message: "Bad payload" });
   }
+
+  let trx;
 
   try {
     const pool = await poolPromise;
-    const trx = new sql.Transaction(pool);
+    trx = new sql.Transaction(pool);
     await trx.begin();
 
-    // XÓA HẾT theo statusType, sau đó THÊM MỚI
+    // Chỉ xóa các entry chưa có ai chọn
     await new sql.Request(trx)
       .input("weeklyMenuId", sql.Int, weeklyMenuId)
       .input("statusType", sql.NVarChar(20), statusType)
       .query(`
-        DELETE FROM dbo.dc_WeeklyMenuEntries
-        WHERE weeklyMenuId=@weeklyMenuId AND statusType=@statusType
+        DELETE e
+        FROM dbo.dc_WeeklyMenuEntries e
+        WHERE e.weeklyMenuId = @weeklyMenuId
+          AND e.statusType = @statusType
+          AND NOT EXISTS (
+            SELECT 1
+            FROM dbo.dc_UserWeeklySelections s
+            WHERE s.weeklyMenuEntryId = e.weeklyMenuEntryId
+          );
       `);
 
+    // Chỉ thêm những entry chưa có
     for (const e of entries) {
       await new sql.Request(trx)
         .input("weeklyMenuId", sql.Int, weeklyMenuId)
@@ -566,52 +655,74 @@ app.post("/api/weekly-menus/:weeklyMenuId/entries", async (req, res) => {
         .input("position", sql.TinyInt, e.position)
         .input("foodId", sql.Int, e.foodId)
         .query(`
-          INSERT INTO dbo.dc_WeeklyMenuEntries
-            (weeklyMenuId, foodId, dayOfWeek, position, statusType, isAction, isLocked, createdAt)
-          VALUES
-            (@weeklyMenuId, @foodId, @dayOfWeek, @position, @statusType, 1, 0, SYSUTCDATETIME())
+          IF NOT EXISTS (
+            SELECT 1
+            FROM dbo.dc_WeeklyMenuEntries
+            WHERE weeklyMenuId = @weeklyMenuId
+              AND statusType = @statusType
+              AND dayOfWeek = @dayOfWeek
+              AND position = @position
+              AND foodId = @foodId
+          )
+          BEGIN
+            INSERT INTO dbo.dc_WeeklyMenuEntries
+              (
+                weeklyMenuId,
+                foodId,
+                dayOfWeek,
+                position,
+                statusType,
+                isAction,
+                isLocked,
+                createdAt
+              )
+            VALUES
+              (
+                @weeklyMenuId,
+                @foodId,
+                @dayOfWeek,
+                @position,
+                @statusType,
+                1,
+                0,
+                SYSUTCDATETIME()
+              )
+          END
         `);
     }
 
     await trx.commit();
 
-  
-const rsW = await pool.request()
-  .input('id', sql.Int, weeklyMenuId)
-  .query(`SELECT TOP 1 weekStartMonday FROM dbo.dc_WeeklyMenus WHERE weeklyMenuId=@id`);
-const monday = rsW.recordset[0]?.weekStartMonday;
-const weekVN = monday ? new Date(monday).toLocaleDateString('vi-VN') : 'tuần mới';
+    const rsW = await pool.request()
+      .input("id", sql.Int, weeklyMenuId)
+      .query(`
+        SELECT TOP 1 weekStartMonday
+        FROM dbo.dc_WeeklyMenus
+        WHERE weeklyMenuId = @id
+      `);
 
-// Nội dung vui nhộn + deeplink về đúng tuần & tab hiện tại
-const bodies = [
-  `Thực đơn ${weekVN} đã sẵn sàng! Vào đặt món kẻo hết suất ngon nha 😋`,
-  `Đã mở thực đơn ${weekVN}! Chốt món hôm nay cho ấm bụng thôi 🥢`,
-  `Tuần mới – món mới! Vào đặt ngay trước khi khóa menu nha 🍱`,
-  `Chuông báo bụng reo 🔔 Menu ${weekVN} đã lên sóng, mời bạn chọn món!`,
-  `Đặt cơm cùng đồng đội? Menu ${weekVN} vừa cập bến nè 🚀`
-];
-//const body = bodies[Math.floor(Math.random() * bodies.length)];
+    const monday = rsW.recordset[0]?.weekStartMonday;
+    const weekVN = monday ? new Date(monday).toLocaleDateString("vi-VN") : "tuần mới";
 
-const body = `Menu ${weekVN} đã sẵn sàng! Vào đặt món kẻo hết suất ngon nha 😋`;
+    const body = `Menu ${weekVN} đã sẵn sàng! Vào đặt món kẻo hết suất ngon nha 😋`;
 
-// URL có thể là relative để SW mở trong cùng domain
-const payload = {
-  title: 'Đặt Cơm THLA – Thực đơn mới',
-  body,
-  url: `/lunch-order?menu=${weeklyMenuId}&tab=${statusType}`,
-  ttl: 3600
-};
+    const payload = {
+      title: "Đặt Cơm THLA – Thực đơn mới",
+      body,
+      url: `/lunch-order?menu=${weeklyMenuId}&tab=${statusType}`,
+      ttl: 3600,
+    };
 
-// Gửi cho TẤT CẢ user có module = 'datcom'
-const stats = await sendPushToUsers(payload, null);
+    const stats = await sendPushToUsers(payload, null);
 
-// trả response kèm thống kê gửi
-return res.json({ success: true, broadcast: stats });
-
+    return res.json({ success: true, broadcast: stats });
   } catch (err) {
-    try { await trx.rollback(); } catch {}
+    try {
+      if (trx) await trx.rollback();
+    } catch {}
+
     console.error("Save entries error:", err);
-    return res.status(500).json({ success:false, message:"Server error" });
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
@@ -1417,16 +1528,95 @@ app.post('/api/lunch-order/user/selections/item-action', async (req, res) => {
 
 // Lấy thực đơn tuần hiện tại (nếu tồn tại) + entries
 // Lấy thực đơn tuần mới nhất (bất kể hôm nay thuộc tuần nào)
+// app.get('/api/lunch-order/user/weekly-menu-latest', async (req, res) => {
+//   try {
+//     const pool = await poolPromise;
+
+//     // Lấy menu mới nhất theo weekStartMonday
+//     const menuRs = await pool.request().query(`
+//       SELECT TOP 1 *
+//       FROM dbo.dc_WeeklyMenus
+//       ORDER BY weekStartMonday DESC;
+//     `);
+
+//     if (!menuRs.recordset?.length) {
+//       return res.json({ success: true, data: null });
+//     }
+
+//     const menu = menuRs.recordset[0];
+
+//     // Lấy Entries + thông tin món + danh sách nhánh (branches) dưới dạng JSON
+//     const entryRs = await pool.request()
+//       .input('wmId', sql.Int, menu.weeklyMenuId)
+//       .query(`
+//         SELECT 
+//           e.weeklyMenuEntryId, e.weeklyMenuId, e.foodId, e.dayOfWeek, e.position, e.statusType,
+//           e.isAction, e.isLocked,
+//           f.foodName, f.imageUrl, f.colorCode,
+//           (
+//             SELECT fb.branchId, fb.branchCode, fb.branchName, fb.isDefault
+//             FROM dbo.dc_FoodBranches fb
+//             WHERE fb.foodId = e.foodId AND (fb.isActive = 1 OR fb.isActive IS NULL)
+//             ORDER BY 
+//               CASE WHEN fb.isDefault = 1 THEN 0 ELSE 1 END,
+//               ISNULL(fb.sortOrder, 9999),
+//               fb.branchName
+//             FOR JSON PATH
+//           ) AS branchesJson
+//         FROM dbo.dc_WeeklyMenuEntries e
+//         JOIN dbo.dc_Foods f ON f.foodId = e.foodId
+//         WHERE e.weeklyMenuId = @wmId
+//         ORDER BY e.dayOfWeek, e.position;
+//       `);
+
+//     const entries = entryRs.recordset.map(r => ({
+//       weeklyMenuEntryId: r.weeklyMenuEntryId,
+//       weeklyMenuId: r.weeklyMenuId,
+//       foodId: r.foodId,
+//       dayOfWeek: r.dayOfWeek,
+//       position: r.position,
+//       statusType: r.statusType,
+//       isAction: r.isAction,
+//       isLocked: r.isLocked,
+//       foodName: r.foodName,
+//       imageUrl: r.imageUrl,
+//       colorCode: r.colorCode,
+//       branches: JSON.parse(r.branchesJson || '[]'),
+//     }));
+
+//     const data = { ...menu, entries };
+//     res.json({ success: true, data });
+//   } catch (err) {
+//     console.error('Get latest weekly menu error:', err);
+//     res.status(500).json({ success: false, message: 'Lỗi lấy menu mới nhất' });
+//   }
+// });
+
 app.get('/api/lunch-order/user/weekly-menu-latest', async (req, res) => {
   try {
     const pool = await poolPromise;
+    const { weekStartMonday } = req.query;
 
-    // Lấy menu mới nhất theo weekStartMonday
-    const menuRs = await pool.request().query(`
+    const menuRequest = pool.request();
+
+    let menuQuery = `
       SELECT TOP 1 *
       FROM dbo.dc_WeeklyMenus
-      ORDER BY weekStartMonday DESC;
-    `);
+    `;
+
+    if (weekStartMonday) {
+      menuRequest.input('weekStartMonday', sql.Date, weekStartMonday);
+      menuQuery += `
+        WHERE CAST(weekStartMonday AS date) = @weekStartMonday
+        ORDER BY weekStartMonday DESC;
+      `;
+    } else {
+      menuQuery += `
+        ORDER BY weekStartMonday DESC;
+      `;
+    }
+
+    const menuRs = await menuRequest.query(menuQuery);
 
     if (!menuRs.recordset?.length) {
       return res.json({ success: true, data: null });
@@ -1434,18 +1624,30 @@ app.get('/api/lunch-order/user/weekly-menu-latest', async (req, res) => {
 
     const menu = menuRs.recordset[0];
 
-    // Lấy Entries + thông tin món + danh sách nhánh (branches) dưới dạng JSON
     const entryRs = await pool.request()
       .input('wmId', sql.Int, menu.weeklyMenuId)
       .query(`
         SELECT 
-          e.weeklyMenuEntryId, e.weeklyMenuId, e.foodId, e.dayOfWeek, e.position, e.statusType,
-          e.isAction, e.isLocked,
-          f.foodName, f.imageUrl, f.colorCode,
+          e.weeklyMenuEntryId,
+          e.weeklyMenuId,
+          e.foodId,
+          e.dayOfWeek,
+          e.position,
+          e.statusType,
+          e.isAction,
+          e.isLocked,
+          f.foodName,
+          f.imageUrl,
+          f.colorCode,
           (
-            SELECT fb.branchId, fb.branchCode, fb.branchName, fb.isDefault
+            SELECT
+              fb.branchId,
+              fb.branchCode,
+              fb.branchName,
+              fb.isDefault
             FROM dbo.dc_FoodBranches fb
-            WHERE fb.foodId = e.foodId AND (fb.isActive = 1 OR fb.isActive IS NULL)
+            WHERE fb.foodId = e.foodId
+              AND (fb.isActive = 1 OR fb.isActive IS NULL)
             ORDER BY 
               CASE WHEN fb.isDefault = 1 THEN 0 ELSE 1 END,
               ISNULL(fb.sortOrder, 9999),
@@ -1458,7 +1660,7 @@ app.get('/api/lunch-order/user/weekly-menu-latest', async (req, res) => {
         ORDER BY e.dayOfWeek, e.position;
       `);
 
-    const entries = entryRs.recordset.map(r => ({
+    const entries = entryRs.recordset.map((r) => ({
       weeklyMenuEntryId: r.weeklyMenuEntryId,
       weeklyMenuId: r.weeklyMenuId,
       foodId: r.foodId,
@@ -1476,8 +1678,8 @@ app.get('/api/lunch-order/user/weekly-menu-latest', async (req, res) => {
     const data = { ...menu, entries };
     res.json({ success: true, data });
   } catch (err) {
-    console.error('Get latest weekly menu error:', err);
-    res.status(500).json({ success: false, message: 'Lỗi lấy menu mới nhất' });
+    console.error('Get weekly menu error:', err);
+    res.status(500).json({ success: false, message: 'Lỗi lấy menu tuần' });
   }
 });
 
@@ -3346,170 +3548,6 @@ app.post('/api/lunch-order/admin/remind-latest-unordered', /*authAdmin,*/ async 
 });
 
 
-
-//====================  API trang đặt món của user
-
-
-
-// const ALLOWED_TYPES = new Set(["re", "ws", "ot"]);
-
-// // GET /api/lunch-order/user/weekly-menu-latest?statusType=re|ws|ot
-// app.get("/api/lunch-order/user/weekly-menu-latest", async (req, res) => {
-//   try {
-//     const statusType = String(req.query.statusType || "").toLowerCase();
-//     const menu = await repo.getLatestWeeklyMenu();
-//     if (!menu) return res.json({ data: null });
-
-//     if (statusType && ALLOWED_TYPES.has(statusType)) {
-//       menu.entries = (menu.entries || []).filter(
-//         (e) => String(e.statusType || "re").toLowerCase() === statusType
-//       );
-//     }
-//     return res.json({ data: menu });
-//   } catch (e) {
-//     console.error(e);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-// // GET /api/lunch-order/user/selections/:weeklyMenuId/:userId
-// app.get("/api/lunch-order/user/selections/:weeklyMenuId/:userId", async (req, res) => {
-//   try {
-//     const { weeklyMenuId, userId } = req.params;
-//     const rows = await repo.getUserSelections(Number(weeklyMenuId), String(userId));
-//     return res.json({ data: rows });
-//   } catch (e) {
-//     console.error(e);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-// POST /api/lunch-order/user/selections/save
-// body: { userId, weeklyMenuId, selections, createdBy }
-// selections:
-//  - user thường: number[] (entryId list)
-//  - thư ký: [{entryId:number, quantity:number}]
-
-// app.post("/api/lunch-order/user/selections/save", async (req, res) => {
-//   try {
-//     const { userId, weeklyMenuId, selections, createdBy } = req.body || {};
-//     if (!userId || !weeklyMenuId || !Array.isArray(selections)) {
-//       return res.status(400).json({ message: "Payload không hợp lệ" });
-//     }
-
-//     const menu = await repo.getWeeklyMenu(Number(weeklyMenuId));
-//     if (!menu || menu.isLocked) {
-//       return res.status(400).json({ message: "Menu đã khoá" });
-//     }
-
-//     // xác định dạng selections
-//     const isSecretaryMode = selections.length > 0 && typeof selections[0] === "object";
-//     if (isSecretaryMode) {
-//       await repo.saveSecretarySelections(String(userId), Number(weeklyMenuId), selections, String(createdBy || userId));
-//     } else {
-//       await repo.saveUserDaySelections(String(userId), Number(weeklyMenuId), selections, String(createdBy || userId));
-//     }
-//     return res.json({ ok: true });
-//   } catch (e) {
-//     console.error(e);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-// POST /api/lunch-order/user/selections/item-action
-// body: { userId, weeklyMenuId, weeklyMenuEntryId, isAction(0|1), updatedBy }
-
-// app.post("/api/lunch-order/user/selections/item-action", async (req, res) => {
-//   try {
-//     const { userId, weeklyMenuId, weeklyMenuEntryId, isAction, updatedBy } = req.body || {};
-//     if (!userId || !weeklyMenuId || !weeklyMenuEntryId || (isAction !== 0 && isAction !== 1)) {
-//       return res.status(400).json({ message: "Payload không hợp lệ" });
-//     }
-
-//     const menu = await repo.getWeeklyMenu(Number(weeklyMenuId));
-//     if (!menu || menu.isLocked) {
-//       return res.status(400).json({ message: "Menu đã khoá" });
-//     }
-
-//     await repo.setItemAction(
-//       String(userId),
-//       Number(weeklyMenuId),
-//       Number(weeklyMenuEntryId),
-//       Number(isAction),
-//       String(updatedBy || userId)
-//     );
-//     return res.json({ ok: true });
-//   } catch (e) {
-//     console.error(e);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-// POST /api/lunch-order/secretary/update-quantity
-// body: { userId, weeklyMenuId, weeklyMenuEntryId, quantity, updatedBy }
-
-// app.post("/api/lunch-order/secretary/update-quantity", async (req, res) => {
-//   try {
-//     const { userId, weeklyMenuId, weeklyMenuEntryId, quantity, updatedBy } = req.body || {};
-//     if (!userId || !weeklyMenuId || !weeklyMenuEntryId) {
-//       return res.status(400).json({ message: "Payload không hợp lệ" });
-//     }
-
-//     const menu = await repo.getWeeklyMenu(Number(weeklyMenuId));
-//     if (!menu || menu.isLocked) {
-//       return res.status(400).json({ message: "Menu đã khoá" });
-//     }
-
-//     await repo.updateSecretaryQuantity(
-//       String(userId),
-//       Number(weeklyMenuId),
-//       Number(weeklyMenuEntryId),
-//       Math.max(1, parseInt(quantity || 1, 10)),
-//       String(updatedBy || userId)
-//     );
-//     return res.json({ ok: true });
-//   } catch (e) {
-//     console.error(e);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-// GET /api/lunch-order/day/entries?date=YYYY-MM-DD&statusType=re|ws|ot
-
-// app.get("/api/lunch-order/day/entries", async (req, res) => {
-//   try {
-//     const date = String(req.query.date || "");
-//     const statusType = String(req.query.statusType || "re").toLowerCase();
-//     if (!date) return res.status(400).json({ message: "Thiếu date" });
-//     if (!ALLOWED_TYPES.has(statusType)) return res.status(400).json({ message: "statusType không hợp lệ" });
-
-//     const entries = await repo.getEntriesByDate(date, statusType);
-//     return res.json({ data: { entries } });
-//   } catch (e) {
-//     console.error(e);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-// POST /api/lunch-order/day/secretary/save
-// body: { date, userId, createdBy, selections: [{weeklyMenuEntryId, quantity}] }
-
-// app.post("/api/lunch-order/day/secretary/save", async (req, res) => {
-//   try {
-//     const { date, userId, selections, createdBy } = req.body || {};
-//     if (!date || !userId || !Array.isArray(selections)) {
-//       return res.status(400).json({ message: "Payload không hợp lệ" });
-//     }
-//     await repo.saveDaySecretary(String(userId), String(date), selections, String(createdBy || userId));
-//     return res.json({ ok: true });
-//   } catch (e) {
-//     console.error(e);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-//============================ API của phần tra cứu ======================
-
 app.get("/api/lunch-order/search/day", async (req, res) => {
   try {
     const qRaw = (req.query.q || "").trim();
@@ -3609,163 +3647,6 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
-
-// app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
-//   try {
-//     const { date } = req.params;
-
-//     if (!date) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Thiếu ngày"
-//       });
-//     }
-
-//     const selectedDate = new Date(date);
-
-//     // ===== Tính thứ trong tuần (Thứ 2 = 1)
-//     let dayOfWeek = selectedDate.getDay();
-//     if (dayOfWeek === 0) dayOfWeek = 7;
-
-//     // ===== Tính Monday của tuần
-//     const diff =
-//       selectedDate.getDate() -
-//       (selectedDate.getDay() || 7) +
-//       1;
-
-//     const monday = new Date(selectedDate.setDate(diff))
-//       .toISOString()
-//       .split("T")[0];
-
-//     const pool = await poolPromise;
-
-//     // =====================================================
-//     // 1️⃣ LẤY WEEKLY MENU
-//     // =====================================================
-//     const wm = await pool.request()
-//       .input("monday", sql.Date, monday)
-//       .query(`
-//         SELECT TOP 1 *
-//         FROM dbo.dc_WeeklyMenus
-//         WHERE weekStartMonday = @monday
-//         ORDER BY createdAt DESC
-//       `);
-
-//     if (wm.recordset.length === 0) {
-//       return res.json({
-//         success: true,
-//         data: {
-//           monday,
-//           dayOfWeek,
-//           foods: [],
-//           rows: []
-//         }
-//       });
-//     }
-
-//     const weeklyMenuId = wm.recordset[0].weeklyMenuId;
-
-//     // =====================================================
-//     // 2️⃣ LẤY FOODS + BRANCH
-//     // =====================================================
-//     const foodsRaw = await pool.request()
-//       .input("weeklyMenuId", sql.Int, weeklyMenuId)
-//       .input("dayOfWeek", sql.Int, dayOfWeek)
-//       .query(`
-//         SELECT 
-//           f.foodId,
-//           f.foodName,
-//           fb.branchId,
-//           fb.branchName,
-//           fb.sortOrder
-//         FROM dbo.dc_WeeklyMenuEntries e
-//         JOIN dbo.dc_Foods f 
-//             ON e.foodId = f.foodId
-//         LEFT JOIN dbo.dc_FoodBranches fb 
-//             ON f.foodId = fb.foodId
-//         WHERE e.weeklyMenuId = @weeklyMenuId
-//           AND e.dayOfWeek = @dayOfWeek
-//           AND e.statusType = 're'
-//         ORDER BY e.position, fb.sortOrder
-//       `);
-
-//     // ===== Group food
-//     const foodMap = {};
-
-//     for (const item of foodsRaw.recordset) {
-//       if (!foodMap[item.foodId]) {
-//         foodMap[item.foodId] = {
-//           foodId: item.foodId,
-//           foodName: item.foodName,
-//           branches: []
-//         };
-//       }
-
-//       if (item.branchId) {
-//         foodMap[item.foodId].branches.push({
-//           branchId: item.branchId,
-//           branchName: item.branchName
-//         });
-//       }
-//     }
-
-//     const groupedFoods = Object.values(foodMap);
-
-//     // =====================================================
-//     // 3️⃣ LẤY ROWS (GROUP ĐÚNG THEO BRANCH)
-//     // =====================================================
-//     const rowsResult = await pool.request()
-//       .input("weeklyMenuId", sql.Int, weeklyMenuId)
-//       .input("dayOfWeek", sql.Int, dayOfWeek)
-//       .query(`
-//         SELECT 
-//             ISNULL(d.departmentId, 0) AS departmentId,
-//             ISNULL(d.departmentName, N'Chưa gán') AS departmentName,
-//             f.foodId,
-//             ISNULL(s.branchId, 0) AS branchId,  -- 🔥 LẤY TRỰC TIẾP TỪ SELECTION
-//             SUM(
-//               ISNULL(s.quantity,0)
-//               + ISNULL(s.quantityOvertime,0)
-//               + ISNULL(s.quantityWorkShift,0)
-//             ) AS totalQuantity
-//         FROM dbo.dc_UserWeeklySelections s
-//         JOIN dbo.dc_WeeklyMenuEntries e 
-//             ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
-//         JOIN dbo.dc_Foods f 
-//             ON e.foodId = f.foodId
-//         JOIN dbo.Users u 
-//             ON s.userId = u.userId
-//         LEFT JOIN dbo.dc_Department d
-//             ON u.dc_DepartmentID = d.departmentId
-//         WHERE e.weeklyMenuId = @weeklyMenuId
-//           AND e.dayOfWeek = @dayOfWeek
-//           AND e.statusType = 're'
-//         GROUP BY 
-//             d.departmentId,
-//             d.departmentName,
-//             f.foodId,
-//             s.branchId
-//         ORDER BY d.departmentName, f.foodId
-//       `);
-
-//     return res.json({
-//       success: true,
-//       data: {
-//         monday,
-//         dayOfWeek,
-//         foods: groupedFoods,
-//         rows: rowsResult.recordset
-//       }
-//     });
-
-//   } catch (err) {
-//     console.error("Report error:", err);
-//     return res.status(500).json({
-//       success: false,
-//       message: "Lỗi lấy báo cáo"
-//     });
-//   }
-// });
 
 app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
   try {
