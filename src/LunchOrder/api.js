@@ -1109,325 +1109,620 @@ app.get("/api/lunch-order/user/weekly-menu/:monday", async (req, res) => {
 
 
 // Lấy danh sách lựa chọn user đã chọn trong tuần
+// app.get('/api/lunch-order/user/selections/:weeklyMenuId/:userId', async (req, res) => {
+//   try {
+//     const { weeklyMenuId, userId } = req.params;
+//     const pool = await poolPromise;
+
+//     const rs = await pool.request()
+//       .input('wmid', sql.Int, weeklyMenuId)
+//       .input('uid', sql.Int, userId)
+//       .query(`
+//         SELECT 
+//           s.weeklyMenuEntryId, 
+//           ISNULL(s.isAction, 1) AS isAction,
+//           ISNULL(s.quantity, 1) AS quantity,
+//           s.branchId
+//         FROM dbo.dc_UserWeeklySelections s
+//         JOIN dbo.dc_WeeklyMenuEntries e ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+//         WHERE e.weeklyMenuId = @wmid AND s.userID = @uid;
+//       `);
+
+//     res.json({
+//       success: true,
+//       data: rs.recordset.map(r => [r.weeklyMenuEntryId, r.isAction, r.quantity, r.branchId ?? null]),
+//     });
+//   } catch (err) {
+//     console.error('Get user selections error:', err);
+//     res.status(500).json({ success: false, message: 'Lỗi lấy lựa chọn của user' });
+//   }
+// });
 app.get('/api/lunch-order/user/selections/:weeklyMenuId/:userId', async (req, res) => {
   try {
     const { weeklyMenuId, userId } = req.params;
+    const { hasSecretary } = req.query;
+
     const pool = await poolPromise;
 
-    const rs = await pool.request()
+    let query = "";
+    const request = pool.request()
       .input('wmid', sql.Int, weeklyMenuId)
-      .input('uid', sql.Int, userId)
-      .query(`
+      .input('uid', sql.Int, userId);
+
+    if (hasSecretary === 'true') {
+
+      query = `
         SELECT 
           s.weeklyMenuEntryId, 
-          ISNULL(s.isAction, 1) AS isAction,
-          ISNULL(s.quantity, 1) AS quantity,
+          ISNULL(s.isAction,1) AS isAction,
+          ISNULL(s.quantity,1) AS quantity,
+          s.branchId,
+          s.userID
+        FROM dbo.dc_UserWeeklySelections s
+        JOIN dbo.dc_WeeklyMenuEntries e 
+            ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+        JOIN dbo.Users u 
+            ON s.userID = u.userID
+        WHERE e.weeklyMenuId = @wmid
+        AND u.dc_DepartmentID = (
+            SELECT dc_DepartmentID 
+            FROM dbo.Users 
+            WHERE userID = @uid
+        )
+      `;
+
+    } else {
+
+      query = `
+        SELECT 
+          s.weeklyMenuEntryId, 
+          ISNULL(s.isAction,1) AS isAction,
+          ISNULL(s.quantity,1) AS quantity,
           s.branchId
         FROM dbo.dc_UserWeeklySelections s
-        JOIN dbo.dc_WeeklyMenuEntries e ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
-        WHERE e.weeklyMenuId = @wmid AND s.userID = @uid;
-      `);
+        JOIN dbo.dc_WeeklyMenuEntries e 
+            ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+        WHERE e.weeklyMenuId = @wmid 
+        AND s.userID = @uid
+      `;
+    }
+
+    const rs = await request.query(query);
 
     res.json({
       success: true,
-      data: rs.recordset.map(r => [r.weeklyMenuEntryId, r.isAction, r.quantity, r.branchId ?? null]),
+      data: rs.recordset.map(r => [
+        r.weeklyMenuEntryId,
+        r.isAction,
+        r.quantity,
+        r.branchId ?? null,
+        r.userID ?? null
+      ])
     });
+
   } catch (err) {
     console.error('Get user selections error:', err);
     res.status(500).json({ success: false, message: 'Lỗi lấy lựa chọn của user' });
   }
 });
 
+// app.post('/api/lunch-order/user/selections/save', async (req, res) => {
+//   try {
+//     const { userId, weeklyMenuId, selections, createdBy, statusType, hasSecretary } = req.body || {};
+//     if (!userId || !weeklyMenuId || !Array.isArray(selections)) {
+//       return res.status(400).json({ success: false, message: 'Payload không hợp lệ' });
+//     }
+//     const st = String(statusType || 're').toLowerCase();
+//     const createdBySafe =
+//       typeof createdBy === 'string' ? createdBy :
+//       (createdBy === null || createdBy === undefined ? null : String(createdBy));
+
+//     const pool = await poolPromise;
+
+//     /* 1) SNAPSHOT CŨ: lấy full để so sánh (key=entry|branch -> qty) */
+//     const oldRs = await pool.request()
+//       .input('uid', sql.Int, userId)
+//       .input('wmid', sql.Int, weeklyMenuId)
+//       .input('stype', sql.NVarChar(10), st)
+//       .query(`
+//         SELECT
+//           s.weeklyMenuEntryId     AS entryId,
+//           s.branchId,
+//           s.quantity,
+//           e.dayOfWeek,
+//           LOWER(ISNULL(e.statusType,'re')) AS statusType,
+//           f.foodName
+//         FROM dbo.dc_UserWeeklySelections s
+//         JOIN dbo.dc_WeeklyMenuEntries e ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
+//         JOIN dbo.dc_Foods f ON f.foodId = e.foodId
+//         WHERE s.userID = @uid
+//           AND e.weeklyMenuId = @wmid
+//           AND LOWER(ISNULL(e.statusType, 're')) = @stype
+//           AND s.isAction = 1
+//       `);
+//     const oldList = oldRs.recordset || [];
+//     const oldMap = new Map(); // key -> { qty, entryId, branchId }
+//     for (const r of oldList) {
+//       const key = `${r.entryId}|${r.branchId ?? 'NULL'}`;
+//       oldMap.set(key, { quantity: Number(r.quantity)||0, entryId: r.entryId, branchId: r.branchId });
+//     }
+
+//     /* 2) DEDUPE selections mới => agg: key = "entry|branch" -> qty */
+//     const agg = new Map();
+//     for (const it of selections) {
+//       if (!it) continue;
+//       let entryId, qty, branchId;
+//       if (typeof it === 'object') {
+//         entryId  = Number(it.entryId);
+//         qty      = Number.isFinite(+it.quantity) ? Math.max(1, parseInt(it.quantity, 10)) : 1;
+//         branchId = it.branchId != null ? Number(it.branchId) : null;
+//       } else {
+//         entryId  = Number(it);
+//         qty      = 1;
+//         branchId = null;
+//       }
+//       if (!Number.isFinite(entryId) || entryId <= 0) continue;
+//       const key = `${entryId}|${branchId === null ? 'NULL' : branchId}`;
+//       agg.set(key, (agg.get(key) ?? 0) + qty);
+//     }
+
+//     /* 3) TX: xoá cũ + insert mới */
+//     const tx = new sql.Transaction(pool);
+//     await tx.begin();
+//     try {
+//       await new sql.Request(tx)
+//         .input('uid', sql.Int, userId)
+//         .input('wmid', sql.Int, weeklyMenuId)
+//         .input('stype', sql.NVarChar(10), st)
+//         .query(`
+//           DELETE s
+//           FROM dbo.dc_UserWeeklySelections s
+//           JOIN dbo.dc_WeeklyMenuEntries e ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
+//           WHERE s.userID = @uid
+//             AND e.weeklyMenuId = @wmid
+//             AND LOWER(ISNULL(e.statusType, 're')) = @stype
+//             AND s.quantityWorkShift IS NULL;
+//         `);
+
+//       const keys = Array.from(agg.keys()).sort((a, b) => {
+//         const [eidA, bidA] = a.split('|'); const [eidB, bidB] = b.split('|');
+//         if (Number(eidA) !== Number(eidB)) return Number(eidA) - Number(eidB);
+//         if (bidA === 'NULL' && bidB !== 'NULL') return -1;
+//         if (bidA !== 'NULL' && bidB === 'NULL') return 1;
+//         return Number(bidA) - Number(bidB);
+//       });
+
+//       // validateBranch nếu có branch cụ thể
+//       const validateBranch = async (entryId, branchId) => {
+//         const rs = await new sql.Request(tx)
+//           .input('eid', sql.Int, entryId)
+//           .input('bid', sql.Int, Number.isFinite(branchId) && branchId > 0 ? branchId : null)
+//           .query(`
+//             SELECT 1
+//             FROM dbo.dc_WeeklyMenuEntries e
+//             JOIN dbo.dc_FoodBranches fb ON fb.branchId = @bid
+//             WHERE e.weeklyMenuEntryId = @eid
+//               AND e.foodId = fb.foodId;
+//           `);
+//         return rs.recordset.length > 0;
+//       };
+
+//       for (const key of keys) {
+//         const [eidStr, bidStr] = key.split('|');
+//         const entryId  = Number(eidStr);
+//         const branchId = bidStr === 'NULL' ? null : Number(bidStr);
+//         const qty = agg.get(key);
+
+//         if (branchId !== null) {
+//           const ok = await validateBranch(entryId, branchId);
+//           if (!ok) {
+//             await tx.rollback();
+//             return res.status(400).json({ success: false, message: `Branch ${branchId} không thuộc món của entry ${entryId}` });
+//           }
+//         }
+
+//         await new sql.Request(tx)
+//           .input('eid', sql.Int, entryId)
+//           .input('uid', sql.Int, userId)
+//           .input('qty', sql.Int, qty)
+//           .input('bid', branchId === null ? sql.Int : sql.Int, branchId)
+//           .input('createdBy', sql.NVarChar(100), createdBySafe)
+//           .query(`
+//             INSERT INTO dbo.dc_UserWeeklySelections
+//               (weeklyMenuEntryId, userID, quantity, branchId, isAction, createdBy)
+//             VALUES
+//               (@eid, @uid, @qty, @bid, 1, @createdBy);
+//           `);
+//       }
+
+//       await tx.commit();
+//     } catch (err) {
+//       await tx.rollback();
+//       throw err;
+//     }
+
+//     res.json({ success: true, message: 'Lưu lựa chọn thành công' });
+
+//     /* 4) TÍNH DIFF & PUSH
+//           - BẮT MỌI THAY ĐỔI: add / remove / qty change (kể cả 're')
+//           - Ngoài ra, nếu st in ('ws','ot') và agg.size>0 mà KHÔNG có diff, vẫn có thể push (tuỳ bạn)
+//     */
+//     try {
+//       // newMap: key -> { qty, entryId, branchId }
+//       const newMap = new Map();
+//       for (const [key, qty] of agg.entries()) {
+//         const [eidStr, bidStr] = key.split('|');
+//         newMap.set(key, {
+//           quantity: Number(qty)||0,
+//           entryId: Number(eidStr),
+//           branchId: bidStr === 'NULL' ? null : Number(bidStr),
+//         });
+//       }
+
+//       // Tính diff
+//       const diffs = []; // {type:'add'|'remove'|'qty', entryId, branchId, qtyFrom?, qtyTo?}
+//       const unionKeys = new Set([...oldMap.keys(), ...newMap.keys()]);
+//       for (const k of unionKeys) {
+//         const o = oldMap.get(k);
+//         const n = newMap.get(k);
+//         if (!o && n) {
+//           diffs.push({ type: 'add', entryId: n.entryId, branchId: n.branchId, qtyTo: n.quantity });
+//         } else if (o && !n) {
+//           diffs.push({ type: 'remove', entryId: o.entryId, branchId: o.branchId, qtyFrom: o.quantity });
+//         } else if (o && n && Number(o.quantity) !== Number(n.quantity)) {
+//           diffs.push({ type: 'qty', entryId: n.entryId, branchId: n.branchId, qtyFrom: o.quantity, qtyTo: n.quantity });
+//         }
+//       }
+
+//       const hasDiff = diffs.length > 0;
+//       const shouldNotifyWsOtEvenNoDiff = (st === 'ws' || st === 'ot') && agg.size > 0;
+//       if (!hasDiff && !shouldNotifyWsOtEvenNoDiff) return;
+
+//       const pool2 = await poolPromise;
+
+//       // Lấy info user + tuần
+//       const infoRs = await pool2.request()
+//         .input('uid', sql.Int, userId)
+//         .input('wmid', sql.Int, weeklyMenuId)
+//         .query(`
+//           SELECT TOP 1 u.fullName, wm.weekStartMonday
+//           FROM dbo.Users u
+//           CROSS JOIN (SELECT weekStartMonday FROM dbo.dc_WeeklyMenus WHERE weeklyMenuId=@wmid) wm
+//           WHERE u.userID = @uid
+//         `);
+//       const info = infoRs.recordset?.[0] || {};
+//       const who = info.fullName || `User #${userId}`;
+//       const weekVN = info.weekStartMonday ? new Date(info.weekStartMonday).toLocaleDateString('vi-VN') : '';
+
+//       // Lấy meta entryId -> dayOfWeek,statusType,foodName
+//       const needEntryIds = hasDiff
+//         ? Array.from(new Set(diffs.map(d => d.entryId)))
+//         : Array.from(new Set([...newMap.values()].map(v => v.entryId)));
+//       const entryInfoMap = new Map();
+//       if (needEntryIds.length) {
+//         const rsE = await pool2.request().query(`
+//           SELECT e.weeklyMenuEntryId AS entryId,
+//                  e.dayOfWeek,
+//                  LOWER(ISNULL(e.statusType,'re')) AS statusType,
+//                  f.foodName
+//           FROM dbo.dc_WeeklyMenuEntries e
+//           JOIN dbo.dc_Foods f ON f.foodId = e.foodId
+//           WHERE e.weeklyMenuEntryId IN (${needEntryIds.join(',')})
+//         `);
+//         for (const r of (rsE.recordset || [])) entryInfoMap.set(r.entryId, r);
+//       }
+
+//       // Lấy tên branch liên quan
+//       const branchIdSet = new Set();
+//       if (hasDiff) {
+//         for (const d of diffs) if (d.branchId != null) branchIdSet.add(d.branchId);
+//       } else {
+//         for (const v of newMap.values()) if (v.branchId != null) branchIdSet.add(v.branchId);
+//       }
+//       const branchNameMap = new Map();
+//       if (branchIdSet.size) {
+//         const rsB = await pool2.request().query(`
+//           SELECT branchId, branchName FROM dbo.dc_FoodBranches
+//           WHERE branchId IN (${[...branchIdSet].join(',')})
+//         `);
+//         for (const r of (rsB.recordset || [])) branchNameMap.set(r.branchId, r.branchName);
+//       }
+
+//       // Render nội dung
+//       const adminIDs = await getDatcomAdminUserIDs(userId); // loại trừ chính user nếu là admin
+//       if (!adminIDs.length) return;
+
+//       if (hasDiff) {
+//         // Gộp theo entry để dễ đọc
+//         const byEntry = new Map(); // entryId -> {adds:[], removes:[], qtys:[]}
+//         for (const d of diffs) {
+//           if (!byEntry.has(d.entryId)) byEntry.set(d.entryId, { adds: [], removes: [], qtys: [] });
+//           const bucket = byEntry.get(d.entryId);
+//           const bname = d.branchId == null ? null : (branchNameMap.get(d.branchId) || null);
+//           const label = bname ? `— ${bname}` : ''; // foodName sẽ lấy ở meta
+//           if (d.type === 'add')    bucket.adds.push({ label, qty: d.qtyTo });
+//           if (d.type === 'remove') bucket.removes.push({ label, qty: d.qtyFrom });
+//           if (d.type === 'qty')    bucket.qtys.push({ label, from: d.qtyFrom, to: d.qtyTo });
+//         }
+
+//         const lines = [];
+//         for (const [entryId, buckets] of byEntry.entries()) {
+//           const meta = entryInfoMap.get(entryId);
+//           if (!meta) continue;
+//           const dname  = dayNameVN(meta.dayOfWeek);
+//           const tlabel = tabLabel(meta.statusType);
+//           const parts = [];
+//           for (const it of buckets.adds)    parts.push(`Chọn ${meta.foodName} ${it.label} x${it.qty}`.trim());
+//           for (const it of buckets.removes) parts.push(`Bỏ ${meta.foodName} ${it.label} x${it.qty}`.trim());
+//           for (const it of buckets.qtys)    parts.push(`Đổi số lượng: ${meta.foodName} ${it.label} x${it.from}→x${it.to}`.trim());
+//           if (parts.length) lines.push(`${dname} (${tlabel}): ${parts.join('; ')}`);
+//           if (lines.length >= 5) break;
+//         }
+//         const more = byEntry.size > 5 ? `\n… +${byEntry.size - 5} ngày khác` : '';
+
+//         const title = 'Cập nhật đặt cơm – thông báo quản trị';
+//         const body  = `${who} vừa cập nhật lựa chọn ${weekVN ? `(tuần ${weekVN})` : ''}\n${lines.join('\n')}${more}`;
+//         const url   = `/lunch-order/admin?menu=${weeklyMenuId}&user=${userId}&tab=${st}`;
+
+//         await sendPushToUsers({ title, body, url, tag: 'lunch-change', renotify: false, ttl: 600 }, adminIDs);
+//       } else if (shouldNotifyWsOtEvenNoDiff) {
+//         // Không có diff nhưng là ws/ot và có chọn -> vẫn báo
+//         const lines = [];
+//         for (const [key, v] of newMap.entries()) {
+//           const meta = entryInfoMap.get(v.entryId);
+//           if (!meta) continue;
+//           const dname  = dayNameVN(meta.dayOfWeek);
+//           const tlabel = tabLabel(meta.statusType);
+//           const bidStr = key.split('|')[1];
+//           const bname  = bidStr === 'NULL' ? null : (branchNameMap.get(Number(bidStr)) || null);
+//           const dish   = [meta.foodName, bname].filter(Boolean).join(' — ');
+//           lines.push(`${dname} (${tlabel}): ${dish} x${v.quantity}`);
+//           if (lines.length >= 5) break;
+//         }
+
+//         const title = 'Đặt suất Đi ca/Tăng ca – thông báo quản trị';
+//         const body  = `${who} vừa đặt suất ${tabLabel(st)} ${weekVN ? `(tuần ${weekVN})` : ''}\n${lines.join('\n')}`;
+//         const url   = `/lunch-order/admin?menu=${weeklyMenuId}&user=${userId}&tab=${st}`;
+
+//         await sendPushToUsers({ title, body, url, tag: 'lunch-ws-ot', renotify: false, ttl: 600 }, adminIDs);
+//       }
+//     } catch (pushErr) {
+//       console.error('[push admin on selections/save] error:', pushErr);
+//     }
+
+//   } catch (err) {
+//     console.error('Save user selections error:', err);
+//     return res.status(500).json({ success: false, message: 'Lỗi lưu lựa chọn cơm' });
+//   }
+// });
 
 app.post('/api/lunch-order/user/selections/save', async (req, res) => {
   try {
-    const { userId, weeklyMenuId, selections, createdBy, statusType } = req.body || {};
+
+    const { userId, weeklyMenuId, selections, createdBy, statusType, hasSecretary } = req.body || {};
+
     if (!userId || !weeklyMenuId || !Array.isArray(selections)) {
       return res.status(400).json({ success: false, message: 'Payload không hợp lệ' });
     }
+
     const st = String(statusType || 're').toLowerCase();
+
     const createdBySafe =
       typeof createdBy === 'string' ? createdBy :
       (createdBy === null || createdBy === undefined ? null : String(createdBy));
 
     const pool = await poolPromise;
 
-    /* 1) SNAPSHOT CŨ: lấy full để so sánh (key=entry|branch -> qty) */
+    /* ================================
+       1️⃣ CHECK SECRETARY
+    ================================= */
+
+    let secretaryUserId = null;
+
+if (hasSecretary === true || hasSecretary === 'true') {
+
+  const rs = await pool.request()
+    .input('uid', sql.Int, userId)
+    .input('wmid', sql.Int, weeklyMenuId)
+    .query(`
+      SELECT TOP 1 s.userID
+      FROM dbo.dc_UserWeeklySelections s
+      JOIN dbo.dc_WeeklyMenuEntries e 
+        ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
+      JOIN dbo.Users u 
+        ON u.userID = s.userID
+      WHERE e.weeklyMenuId = @wmid
+      AND u.dc_DepartmentID = (
+          SELECT dc_DepartmentID FROM dbo.Users WHERE userID = @uid
+      )
+    `);
+
+  if (rs.recordset.length > 0) {
+    secretaryUserId = rs.recordset[0].userID;
+  }
+}
+
+    /* ================================
+       2️⃣ LẤY DỮ LIỆU CŨ
+    ================================= */
+
     const oldRs = await pool.request()
       .input('uid', sql.Int, userId)
       .input('wmid', sql.Int, weeklyMenuId)
       .input('stype', sql.NVarChar(10), st)
       .query(`
         SELECT
-          s.weeklyMenuEntryId     AS entryId,
+          s.weeklyMenuEntryId AS entryId,
           s.branchId,
           s.quantity,
-          e.dayOfWeek,
-          LOWER(ISNULL(e.statusType,'re')) AS statusType,
-          f.foodName
+          s.createdAt,
+          s.createdBy
         FROM dbo.dc_UserWeeklySelections s
-        JOIN dbo.dc_WeeklyMenuEntries e ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
-        JOIN dbo.dc_Foods f ON f.foodId = e.foodId
+        JOIN dbo.dc_WeeklyMenuEntries e 
+          ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
         WHERE s.userID = @uid
-          AND e.weeklyMenuId = @wmid
-          AND LOWER(ISNULL(e.statusType, 're')) = @stype
-          AND s.isAction = 1
+        AND e.weeklyMenuId = @wmid
+        AND LOWER(ISNULL(e.statusType,'re')) = @stype
       `);
+
     const oldList = oldRs.recordset || [];
-    const oldMap = new Map(); // key -> { qty, entryId, branchId }
+
+    const createdInfoMap = new Map();
+
     for (const r of oldList) {
       const key = `${r.entryId}|${r.branchId ?? 'NULL'}`;
-      oldMap.set(key, { quantity: Number(r.quantity)||0, entryId: r.entryId, branchId: r.branchId });
+
+      createdInfoMap.set(key, {
+        createdAt: r.createdAt,
+        createdBy: r.createdBy
+      });
     }
 
-    /* 2) DEDUPE selections mới => agg: key = "entry|branch" -> qty */
+    /* ================================
+       3️⃣ DEDUPE selections
+    ================================= */
+
     const agg = new Map();
+
     for (const it of selections) {
+
       if (!it) continue;
+
       let entryId, qty, branchId;
+
       if (typeof it === 'object') {
-        entryId  = Number(it.entryId);
-        qty      = Number.isFinite(+it.quantity) ? Math.max(1, parseInt(it.quantity, 10)) : 1;
-        branchId = it.branchId != null ? Number(it.branchId) : null;
+
+        entryId = Number(it.entryId);
+
+        qty = Number.isFinite(+it.quantity)
+          ? Math.max(1, parseInt(it.quantity, 10))
+          : 1;
+
+        branchId = it.branchId != null
+          ? Number(it.branchId)
+          : null;
+
       } else {
-        entryId  = Number(it);
-        qty      = 1;
+
+        entryId = Number(it);
+        qty = 1;
         branchId = null;
+
       }
+
       if (!Number.isFinite(entryId) || entryId <= 0) continue;
+
       const key = `${entryId}|${branchId === null ? 'NULL' : branchId}`;
+
       agg.set(key, (agg.get(key) ?? 0) + qty);
+
     }
 
-    /* 3) TX: xoá cũ + insert mới */
+    /* ================================
+       4️⃣ TRANSACTION
+    ================================= */
+
     const tx = new sql.Transaction(pool);
+
     await tx.begin();
+
     try {
+
+      /* DELETE CŨ */
+
       await new sql.Request(tx)
-        .input('uid', sql.Int, userId)
         .input('wmid', sql.Int, weeklyMenuId)
         .input('stype', sql.NVarChar(10), st)
+        .input('targetUid', sql.Int, secretaryUserId || userId)
         .query(`
           DELETE s
           FROM dbo.dc_UserWeeklySelections s
-          JOIN dbo.dc_WeeklyMenuEntries e ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
-          WHERE s.userID = @uid
-            AND e.weeklyMenuId = @wmid
-            AND LOWER(ISNULL(e.statusType, 're')) = @stype
-            AND s.quantityWorkShift IS NULL;
+          JOIN dbo.dc_WeeklyMenuEntries e 
+            ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
+          WHERE s.userID = @targetUid
+          AND e.weeklyMenuId = @wmid
+          AND LOWER(ISNULL(e.statusType,'re')) = @stype
         `);
 
-      const keys = Array.from(agg.keys()).sort((a, b) => {
-        const [eidA, bidA] = a.split('|'); const [eidB, bidB] = b.split('|');
-        if (Number(eidA) !== Number(eidB)) return Number(eidA) - Number(eidB);
-        if (bidA === 'NULL' && bidB !== 'NULL') return -1;
-        if (bidA !== 'NULL' && bidB === 'NULL') return 1;
-        return Number(bidA) - Number(bidB);
-      });
+      /* INSERT LẠI */
 
-      // validateBranch nếu có branch cụ thể
-      const validateBranch = async (entryId, branchId) => {
-        const rs = await new sql.Request(tx)
-          .input('eid', sql.Int, entryId)
-          .input('bid', sql.Int, Number.isFinite(branchId) && branchId > 0 ? branchId : null)
-          .query(`
-            SELECT 1
-            FROM dbo.dc_WeeklyMenuEntries e
-            JOIN dbo.dc_FoodBranches fb ON fb.branchId = @bid
-            WHERE e.weeklyMenuEntryId = @eid
-              AND e.foodId = fb.foodId;
-          `);
-        return rs.recordset.length > 0;
-      };
+      for (const [key, qty] of agg.entries()) {
 
-      for (const key of keys) {
         const [eidStr, bidStr] = key.split('|');
-        const entryId  = Number(eidStr);
-        const branchId = bidStr === 'NULL' ? null : Number(bidStr);
-        const qty = agg.get(key);
 
-        if (branchId !== null) {
-          const ok = await validateBranch(entryId, branchId);
-          if (!ok) {
-            await tx.rollback();
-            return res.status(400).json({ success: false, message: `Branch ${branchId} không thuộc món của entry ${entryId}` });
-          }
-        }
+        const entryId = Number(eidStr);
+
+        const branchId =
+          bidStr === 'NULL'
+            ? null
+            : Number(bidStr);
+
+        const createdInfo = createdInfoMap.get(key);
 
         await new sql.Request(tx)
           .input('eid', sql.Int, entryId)
-          .input('uid', sql.Int, userId)
+          .input('uid', sql.Int, secretaryUserId || userId)
           .input('qty', sql.Int, qty)
-          .input('bid', branchId === null ? sql.Int : sql.Int, branchId)
-          .input('createdBy', sql.NVarChar(100), createdBySafe)
+          .input('bid', sql.Int, branchId)
+          .input('createdBy', sql.NVarChar(100), createdInfo?.createdBy || createdBySafe)
+          .input('createdAt', sql.DateTime, createdInfo?.createdAt || new Date())
+          .input('updatedBy', sql.NVarChar(100), createdBySafe)
           .query(`
             INSERT INTO dbo.dc_UserWeeklySelections
-              (weeklyMenuEntryId, userID, quantity, branchId, isAction, createdBy)
+            (
+              weeklyMenuEntryId,
+              userID,
+              quantity,
+              branchId,
+              isAction,
+              createdBy,
+              createdAt,
+              updatedBy,
+              updatedAt
+            )
             VALUES
-              (@eid, @uid, @qty, @bid, 1, @createdBy);
+            (
+              @eid,
+              @uid,
+              @qty,
+              @bid,
+              1,
+              @createdBy,
+              @createdAt,
+              @updatedBy,
+              GETDATE()
+            )
           `);
+
       }
 
       await tx.commit();
+
     } catch (err) {
+
       await tx.rollback();
+
       throw err;
+
     }
 
-    res.json({ success: true, message: 'Lưu lựa chọn thành công' });
-
-    /* 4) TÍNH DIFF & PUSH
-          - BẮT MỌI THAY ĐỔI: add / remove / qty change (kể cả 're')
-          - Ngoài ra, nếu st in ('ws','ot') và agg.size>0 mà KHÔNG có diff, vẫn có thể push (tuỳ bạn)
-    */
-    try {
-      // newMap: key -> { qty, entryId, branchId }
-      const newMap = new Map();
-      for (const [key, qty] of agg.entries()) {
-        const [eidStr, bidStr] = key.split('|');
-        newMap.set(key, {
-          quantity: Number(qty)||0,
-          entryId: Number(eidStr),
-          branchId: bidStr === 'NULL' ? null : Number(bidStr),
-        });
-      }
-
-      // Tính diff
-      const diffs = []; // {type:'add'|'remove'|'qty', entryId, branchId, qtyFrom?, qtyTo?}
-      const unionKeys = new Set([...oldMap.keys(), ...newMap.keys()]);
-      for (const k of unionKeys) {
-        const o = oldMap.get(k);
-        const n = newMap.get(k);
-        if (!o && n) {
-          diffs.push({ type: 'add', entryId: n.entryId, branchId: n.branchId, qtyTo: n.quantity });
-        } else if (o && !n) {
-          diffs.push({ type: 'remove', entryId: o.entryId, branchId: o.branchId, qtyFrom: o.quantity });
-        } else if (o && n && Number(o.quantity) !== Number(n.quantity)) {
-          diffs.push({ type: 'qty', entryId: n.entryId, branchId: n.branchId, qtyFrom: o.quantity, qtyTo: n.quantity });
-        }
-      }
-
-      const hasDiff = diffs.length > 0;
-      const shouldNotifyWsOtEvenNoDiff = (st === 'ws' || st === 'ot') && agg.size > 0;
-      if (!hasDiff && !shouldNotifyWsOtEvenNoDiff) return;
-
-      const pool2 = await poolPromise;
-
-      // Lấy info user + tuần
-      const infoRs = await pool2.request()
-        .input('uid', sql.Int, userId)
-        .input('wmid', sql.Int, weeklyMenuId)
-        .query(`
-          SELECT TOP 1 u.fullName, wm.weekStartMonday
-          FROM dbo.Users u
-          CROSS JOIN (SELECT weekStartMonday FROM dbo.dc_WeeklyMenus WHERE weeklyMenuId=@wmid) wm
-          WHERE u.userID = @uid
-        `);
-      const info = infoRs.recordset?.[0] || {};
-      const who = info.fullName || `User #${userId}`;
-      const weekVN = info.weekStartMonday ? new Date(info.weekStartMonday).toLocaleDateString('vi-VN') : '';
-
-      // Lấy meta entryId -> dayOfWeek,statusType,foodName
-      const needEntryIds = hasDiff
-        ? Array.from(new Set(diffs.map(d => d.entryId)))
-        : Array.from(new Set([...newMap.values()].map(v => v.entryId)));
-      const entryInfoMap = new Map();
-      if (needEntryIds.length) {
-        const rsE = await pool2.request().query(`
-          SELECT e.weeklyMenuEntryId AS entryId,
-                 e.dayOfWeek,
-                 LOWER(ISNULL(e.statusType,'re')) AS statusType,
-                 f.foodName
-          FROM dbo.dc_WeeklyMenuEntries e
-          JOIN dbo.dc_Foods f ON f.foodId = e.foodId
-          WHERE e.weeklyMenuEntryId IN (${needEntryIds.join(',')})
-        `);
-        for (const r of (rsE.recordset || [])) entryInfoMap.set(r.entryId, r);
-      }
-
-      // Lấy tên branch liên quan
-      const branchIdSet = new Set();
-      if (hasDiff) {
-        for (const d of diffs) if (d.branchId != null) branchIdSet.add(d.branchId);
-      } else {
-        for (const v of newMap.values()) if (v.branchId != null) branchIdSet.add(v.branchId);
-      }
-      const branchNameMap = new Map();
-      if (branchIdSet.size) {
-        const rsB = await pool2.request().query(`
-          SELECT branchId, branchName FROM dbo.dc_FoodBranches
-          WHERE branchId IN (${[...branchIdSet].join(',')})
-        `);
-        for (const r of (rsB.recordset || [])) branchNameMap.set(r.branchId, r.branchName);
-      }
-
-      // Render nội dung
-      const adminIDs = await getDatcomAdminUserIDs(userId); // loại trừ chính user nếu là admin
-      if (!adminIDs.length) return;
-
-      if (hasDiff) {
-        // Gộp theo entry để dễ đọc
-        const byEntry = new Map(); // entryId -> {adds:[], removes:[], qtys:[]}
-        for (const d of diffs) {
-          if (!byEntry.has(d.entryId)) byEntry.set(d.entryId, { adds: [], removes: [], qtys: [] });
-          const bucket = byEntry.get(d.entryId);
-          const bname = d.branchId == null ? null : (branchNameMap.get(d.branchId) || null);
-          const label = bname ? `— ${bname}` : ''; // foodName sẽ lấy ở meta
-          if (d.type === 'add')    bucket.adds.push({ label, qty: d.qtyTo });
-          if (d.type === 'remove') bucket.removes.push({ label, qty: d.qtyFrom });
-          if (d.type === 'qty')    bucket.qtys.push({ label, from: d.qtyFrom, to: d.qtyTo });
-        }
-
-        const lines = [];
-        for (const [entryId, buckets] of byEntry.entries()) {
-          const meta = entryInfoMap.get(entryId);
-          if (!meta) continue;
-          const dname  = dayNameVN(meta.dayOfWeek);
-          const tlabel = tabLabel(meta.statusType);
-          const parts = [];
-          for (const it of buckets.adds)    parts.push(`Chọn ${meta.foodName} ${it.label} x${it.qty}`.trim());
-          for (const it of buckets.removes) parts.push(`Bỏ ${meta.foodName} ${it.label} x${it.qty}`.trim());
-          for (const it of buckets.qtys)    parts.push(`Đổi số lượng: ${meta.foodName} ${it.label} x${it.from}→x${it.to}`.trim());
-          if (parts.length) lines.push(`${dname} (${tlabel}): ${parts.join('; ')}`);
-          if (lines.length >= 5) break;
-        }
-        const more = byEntry.size > 5 ? `\n… +${byEntry.size - 5} ngày khác` : '';
-
-        const title = 'Cập nhật đặt cơm – thông báo quản trị';
-        const body  = `${who} vừa cập nhật lựa chọn ${weekVN ? `(tuần ${weekVN})` : ''}\n${lines.join('\n')}${more}`;
-        const url   = `/lunch-order/admin?menu=${weeklyMenuId}&user=${userId}&tab=${st}`;
-
-        await sendPushToUsers({ title, body, url, tag: 'lunch-change', renotify: false, ttl: 600 }, adminIDs);
-      } else if (shouldNotifyWsOtEvenNoDiff) {
-        // Không có diff nhưng là ws/ot và có chọn -> vẫn báo
-        const lines = [];
-        for (const [key, v] of newMap.entries()) {
-          const meta = entryInfoMap.get(v.entryId);
-          if (!meta) continue;
-          const dname  = dayNameVN(meta.dayOfWeek);
-          const tlabel = tabLabel(meta.statusType);
-          const bidStr = key.split('|')[1];
-          const bname  = bidStr === 'NULL' ? null : (branchNameMap.get(Number(bidStr)) || null);
-          const dish   = [meta.foodName, bname].filter(Boolean).join(' — ');
-          lines.push(`${dname} (${tlabel}): ${dish} x${v.quantity}`);
-          if (lines.length >= 5) break;
-        }
-
-        const title = 'Đặt suất Đi ca/Tăng ca – thông báo quản trị';
-        const body  = `${who} vừa đặt suất ${tabLabel(st)} ${weekVN ? `(tuần ${weekVN})` : ''}\n${lines.join('\n')}`;
-        const url   = `/lunch-order/admin?menu=${weeklyMenuId}&user=${userId}&tab=${st}`;
-
-        await sendPushToUsers({ title, body, url, tag: 'lunch-ws-ot', renotify: false, ttl: 600 }, adminIDs);
-      }
-    } catch (pushErr) {
-      console.error('[push admin on selections/save] error:', pushErr);
-    }
+    res.json({
+      success: true,
+      message: 'Lưu lựa chọn thành công'
+    });
 
   } catch (err) {
+
     console.error('Save user selections error:', err);
-    return res.status(500).json({ success: false, message: 'Lỗi lưu lựa chọn cơm' });
+
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi lưu lựa chọn cơm'
+    });
+
   }
 });
+
 
 // helper: tên thứ tiếng Việt từ dayOfWeek (1..7: Th2..CN)
 function viDayOfWeek(dow) {
@@ -3651,6 +3946,7 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
 app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
   try {
     const { date } = req.params;
+    const { statusType = "re" } = req.query;
 
     if (!date) {
       return res.status(400).json({
@@ -3722,6 +4018,7 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
     const foodsRaw = await pool.request()
   .input("weeklyMenuId", sql.Int, weeklyMenuId)
   .input("dayOfWeek", sql.Int, dayOfWeek)
+  .input("statusType", sql.VarChar, statusType)
   .query(`
     SELECT DISTINCT
         f.foodId,
@@ -3738,7 +4035,7 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
         ON s.branchId = fb.branchId
     WHERE e.weeklyMenuId = @weeklyMenuId
       AND e.dayOfWeek = @dayOfWeek
-      AND e.statusType = 're'
+      AND e.statusType = @statusType
     ORDER BY e.position ASC
   `);
 
@@ -3770,6 +4067,7 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
     const rowsResult = await pool.request()
       .input("weeklyMenuId", sql.Int, weeklyMenuId)
       .input("dayOfWeek", sql.Int, dayOfWeek)
+      .input("statusType", sql.VarChar, statusType)
       .query(`
     SELECT 
         d.departmentId,
@@ -3791,7 +4089,7 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
         ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
         AND e.weeklyMenuId = @weeklyMenuId
         AND e.dayOfWeek = @dayOfWeek
-        AND e.statusType = 're'
+        AND e.statusType = @statusType
     LEFT JOIN dbo.dc_Foods f 
         ON e.foodId = f.foodId
     WHERE d.isAction = 1

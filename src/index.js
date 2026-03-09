@@ -95,6 +95,7 @@ app.use('/api/presence', require('./presence/api'));
 app.use('/pageview', require('./pageviewRouter/api'));
 app.use('/api/ink-coverage', require('./InkCoveragePercentOnFilm/api'));
 app.use('/api/quality-inspection', require('./QualityInspection/api'));
+app.use('/api/mes', require('./MES/api'));
 
 app.get("/users/get", async (req, res) => {
   try {
