@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const { sql, poolPromise } = require("./db");
 const bcrypt = require("bcrypt");
 const { DateTime } = require('luxon');
+const uploadAvatar = require("./middleware/uploadAvatar");
 
 // VAPID (ví dụ)
 const webpush = require('web-push');
@@ -1161,7 +1162,7 @@ app.post('/login', async (req, res) => {
       .input('username', sql.NVarChar, username)
       .query(`
         SELECT TOP 1
-          userID, username, passwordHash, fullName, email, role, isActive, hasChangedPassword, firstLoginGiftClaimed
+          userID, username, passwordHash, fullName, email, role, isActive, hasChangedPassword, firstLoginGiftClaimed, avatar
         FROM dbo.Users
         WHERE username = @username AND isActive = 1
       `);
@@ -1187,6 +1188,7 @@ app.post('/login', async (req, res) => {
       fullName: u.fullName,
       hasChangedPassword: u.hasChangedPassword,
       firstLoginGiftClaimed: u.firstLoginGiftClaimed,
+      avatar: u.avatar,
     };
 
     const accessToken  = signAccessToken(payload);
@@ -1291,6 +1293,7 @@ app.post('/login', async (req, res) => {
           role: u.role,
           hasChangedPassword: u.hasChangedPassword,
           firstLoginGiftClaimed: u.firstLoginGiftClaimed,
+          avatar: u.avatar,
         },
         permissions // ⬅️ TRẢ KÈM QUYỀN
       },
@@ -1651,6 +1654,147 @@ app.put('/api/users/:userId', async (req, res) => {
   } catch (err) {
     console.error('PUT /api/users/:userId error:', err);
     return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+const getCloudinaryPublicIdFromUrl = (url) => {
+  if (!url) return null;
+
+  try {
+    // Ví dụ URL:
+    // https://res.cloudinary.com/xxx/image/upload/v123456/folder/file.jpg
+    const parts = url.split("/");
+    const uploadIndex = parts.findIndex((p) => p === "upload");
+    if (uploadIndex === -1) return null;
+
+    const publicPathParts = parts.slice(uploadIndex + 2); // bỏ "v123456"
+    const joined = publicPathParts.join("/");
+
+    // bỏ extension
+    return joined.replace(/\.[^/.]+$/, "");
+  } catch {
+    return null;
+  }
+};
+
+app.post(
+  "/api/users/avatar",
+  requireAuth,
+  uploadAvatar.single("avatar"),
+  async (req, res) => {
+    try {
+      const avatarUrl = req.file?.path;
+
+      if (!avatarUrl) {
+        return res.status(400).json({
+          success: false,
+          message: "Upload avatar thất bại",
+        });
+      }
+
+      const pool = await poolPromise;
+
+      // Lấy avatar cũ
+      const oldUser = await pool
+        .request()
+        .input("userID", sql.Int, req.user.userID)
+        .query(`
+          SELECT avatar
+          FROM dbo.Users
+          WHERE userID = @userID
+        `);
+
+      const oldAvatar = oldUser.recordset?.[0]?.avatar || null;
+
+      // Update avatar mới vào DB
+      await pool
+        .request()
+        .input("userID", sql.Int, req.user.userID)
+        .input("avatar", sql.NVarChar(sql.MAX), avatarUrl)
+        .query(`
+          UPDATE dbo.Users
+          SET avatar = @avatar,
+              updatedAt = SYSDATETIME()
+          WHERE userID = @userID
+        `);
+
+      // Xóa avatar cũ trên cloud nếu có
+      if (oldAvatar && oldAvatar !== avatarUrl) {
+        const oldPublicId = getCloudinaryPublicIdFromUrl(oldAvatar);
+        if (oldPublicId) {
+          try {
+            await cloudinary.uploader.destroy(oldPublicId);
+          } catch (e) {
+            console.error("Không xóa được avatar cũ trên cloud:", e.message);
+          }
+        }
+      }
+
+      res.json({
+        success: true,
+        avatar: avatarUrl,
+        message: "Cập nhật avatar thành công",
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: "Server error",
+      });
+    }
+  }
+);
+
+app.delete("/api/users/avatar", requireAuth, async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    // Lấy avatar hiện tại
+    const result = await pool
+      .request()
+      .input("userID", sql.Int, req.user.userID)
+      .query(`
+        SELECT avatar
+        FROM dbo.Users
+        WHERE userID = @userID
+      `);
+
+    const currentAvatar = result.recordset?.[0]?.avatar || null;
+
+    // Xóa avatar trong DB
+    await pool
+      .request()
+      .input("userID", sql.Int, req.user.userID)
+      .query(`
+        UPDATE dbo.Users
+        SET avatar = NULL,
+            updatedAt = SYSDATETIME()
+        WHERE userID = @userID
+      `);
+
+    // Xóa ảnh trên cloud
+    if (currentAvatar) {
+      const publicId = getCloudinaryPublicIdFromUrl(currentAvatar);
+      if (publicId) {
+        try {
+          await cloudinary.uploader.destroy(publicId);
+        } catch (e) {
+          console.error("Không xóa được avatar trên cloud:", e.message);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      avatar: null,
+      message: "Đã reset avatar",
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
 

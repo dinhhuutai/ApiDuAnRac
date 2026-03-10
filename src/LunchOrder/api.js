@@ -1525,7 +1525,7 @@ if (hasSecretary === true || hasSecretary === 'true') {
     .input('uid', sql.Int, userId)
     .input('wmid', sql.Int, weeklyMenuId)
     .query(`
-      SELECT TOP 1 s.userID
+      SELECT TOP 1 s.userID, s.createdAt, s.createdBy
       FROM dbo.dc_UserWeeklySelections s
       JOIN dbo.dc_WeeklyMenuEntries e 
         ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
@@ -1538,7 +1538,7 @@ if (hasSecretary === true || hasSecretary === 'true') {
     `);
 
   if (rs.recordset.length > 0) {
-    secretaryUserId = rs.recordset[0].userID;
+    secretaryUserId = rs.recordset[0];
   }
 }
 
@@ -1633,7 +1633,7 @@ if (hasSecretary === true || hasSecretary === 'true') {
       await new sql.Request(tx)
         .input('wmid', sql.Int, weeklyMenuId)
         .input('stype', sql.NVarChar(10), st)
-        .input('targetUid', sql.Int, secretaryUserId || userId)
+        .input('targetUid', sql.Int, secretaryUserId?.userID || userId)
         .query(`
           DELETE s
           FROM dbo.dc_UserWeeklySelections s
@@ -1657,15 +1657,14 @@ if (hasSecretary === true || hasSecretary === 'true') {
             ? null
             : Number(bidStr);
 
-        const createdInfo = createdInfoMap.get(key);
 
         await new sql.Request(tx)
           .input('eid', sql.Int, entryId)
-          .input('uid', sql.Int, secretaryUserId || userId)
+          .input('uid', sql.Int, secretaryUserId?.userID || userId)
           .input('qty', sql.Int, qty)
           .input('bid', sql.Int, branchId)
-          .input('createdBy', sql.NVarChar(100), createdInfo?.createdBy || createdBySafe)
-          .input('createdAt', sql.DateTime, createdInfo?.createdAt || new Date())
+          .input('createdBy', sql.NVarChar(100), secretaryUserId?.createdBy || createdBySafe)
+          .input('createdAt', sql.DateTime, secretaryUserId?.createdAt || null)
           .input('updatedBy', sql.NVarChar(100), createdBySafe)
           .query(`
             INSERT INTO dbo.dc_UserWeeklySelections
@@ -1688,7 +1687,7 @@ if (hasSecretary === true || hasSecretary === 'true') {
               @bid,
               1,
               @createdBy,
-              @createdAt,
+              ISNULL(@createdAt, GETDATE()),
               @updatedBy,
               GETDATE()
             )
