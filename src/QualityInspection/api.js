@@ -26,7 +26,7 @@ router.post('/save-result', requireAuth, async (req, res) => {
     } = req.body;
 
     const userID = req.user.userID;
-    const employeeName = req.user.username;
+    const employeeName = req.user.fullName;
 
     // ✅ LẤY msnv TỪ DATABASE
     const pool = await poolPromise;
@@ -48,7 +48,7 @@ router.post('/save-result', requireAuth, async (req, res) => {
       });
     }
 
-    const employeeId = userResult.recordset[0].msnv;
+    const employeeId = userResult.recordset[0].username;
 
     // ✅ Payload gửi internal API
     const payload = {
