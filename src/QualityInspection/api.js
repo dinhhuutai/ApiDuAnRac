@@ -27,28 +27,7 @@ router.post('/save-result', requireAuth, async (req, res) => {
 
     const userID = req.user.userID;
     const employeeName = req.user.fullName;
-
-    // ✅ LẤY msnv TỪ DATABASE
-    const pool = await poolPromise;
-
-    const userResult = await pool.request()
-      .input('userID', sql.Int, userID)
-      .query(`
-        SELECT msnv
-        FROM dbo.Users
-        WHERE userID = @userID
-          AND isDeleted = 0
-          AND isActive = 1
-      `);
-
-    if (!userResult.recordset.length) {
-      return res.status(404).json({
-        success: false,
-        message: 'Không tìm thấy nhân viên'
-      });
-    }
-
-    const employeeId = userResult.recordset[0].username;
+    const employeeId = req.user.username;
 
     // ✅ Payload gửi internal API
     const payload = {
