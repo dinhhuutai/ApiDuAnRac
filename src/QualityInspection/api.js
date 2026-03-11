@@ -20,7 +20,8 @@ router.post('/save-result', requireAuth, async (req, res) => {
       inspectionType,
       qrCode,
       inspectionDateTime,
-      result
+      result,
+      transQuantity
     } = req.body;
 
     const userID = req.user.userID;
@@ -55,7 +56,8 @@ router.post('/save-result', requireAuth, async (req, res) => {
       employeeName,
       qrCode,
       inspectionDateTime,
-      result
+      result,
+      transQuantity: Number(transQuantity ?? 0)
     };
 
     const response = await axios.post(

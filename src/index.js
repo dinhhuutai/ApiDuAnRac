@@ -53,6 +53,7 @@ const port = process.env.PORT || 5000;
 const UPLOAD_ROOT = process.env.UPLOAD_ROOT || "D:/uploads";
 
 app.use(express.json());
+app.use(cookieParser());
 app.use(
   "/uploads",
   express.static(UPLOAD_ROOT, {
@@ -3705,7 +3706,6 @@ app.get("/api/users/:userId/modules-roles", async (req, res) => {
 app.post('/refresh', async (req, res) => {
   try {
     const rt = req.cookies?.refresh_token;
-    console.log(rt);
     if (!rt) return res.status(401).json({ success: false, message: 'Missing refresh token' });
 
     let decoded;
@@ -3740,15 +3740,15 @@ app.post('/refresh', async (req, res) => {
     // Lấy lại thông tin user (role..)
     const ru = await pool.request()
       .input('userID', sql.Int, decoded.userID)
-      .query(`SELECT TOP 1 userID, username, role, fullName FROM dbo.Users WHERE userID=@userID AND isActive=1`);
+      .query(`SELECT TOP 1 userID, username, role, fullName, avatar, hasChangedPassword, firstLoginGiftClaimed FROM dbo.Users WHERE userID=@userID AND isActive=1`);
 
     const u = ru.recordset[0];
     if (!u) return res.status(401).json({ success: false, message: 'User disabled' });
 
-    const accessToken = signAccessToken({ userID: u.userID, username: u.username, role: u.role, fullName: u.fullName });
+    const accessToken = signAccessToken({ userID: u.userID, username: u.username, role: u.role, fullName: u.fullName, avatar: u.avatar, hasChangedPassword: u.hasChangedPassword, firstLoginGiftClaimed: u.firstLoginGiftClaimed });
 
     setRefreshCookie(res, newRT);
-    return res.json({ success: true, data: { accessToken } });
+    return res.json({ success: true, data: { accessToken, user: u } });
   } catch (e) {
     console.error('refresh error', e);
     return res.status(500).json({ success: false, message: 'Server error' });
