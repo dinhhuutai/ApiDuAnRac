@@ -74,7 +74,8 @@ router.get('/orders', requireAuth, async (req, res) => {
       toDate,
       orderId,
       customerName,
-      mstatus
+      mstatus,
+      po
     } = req.query;
 
     const params = buildQueryParams({
@@ -82,7 +83,8 @@ router.get('/orders', requireAuth, async (req, res) => {
       toDate,
       orderId,
       customerName,
-      mstatus
+      mstatus,
+      po
     });
 
     const response = await internalApi.get('/api/server/backup/mes/orders', {
@@ -121,14 +123,16 @@ router.get('/orders/:orderId/items', requireAuth, async (req, res) => {
       fromDate,
       toDate,
       itemCode,
-      mstatus
+      mstatus,
+      po
     } = req.query;
 
     const params = buildQueryParams({
       fromDate,
       toDate,
       itemCode,
-      mstatus
+      mstatus,
+      po
     });
 
     const response = await internalApi.get(`/api/server/backup/mes/orders/${orderId}/items`, {
@@ -167,14 +171,18 @@ router.get('/items/:itemId/details', requireAuth, async (req, res) => {
       fromDate,
       toDate,
       detailCode,
-      mstatus
+      mstatus,
+      po,
+      hanghoaten
     } = req.query;
 
     const params = buildQueryParams({
       fromDate,
       toDate,
       detailCode,
-      mstatus
+      mstatus,
+      po,
+      hanghoaten
     });
 
     const response = await internalApi.get(`/api/server/backup/mes/items/${itemId}/details`, {

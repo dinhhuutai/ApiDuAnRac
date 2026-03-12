@@ -174,11 +174,9 @@ async function runLunchFeedbackAt1130() {
 }
 
 // ── Lịch: 11:30 hằng ngày (giờ VN)
-cron.schedule('0 50 11 * * *', () => {
-  console.log('[cron] feedback 11:50 fired at', new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }));
-  runLunchFeedbackAt1130();
-}, { timezone: 'Asia/Ho_Chi_Minh' });
-
-console.log('[cron] lunchFeedback1130Job started: 11:30 daily (Asia/Ho_Chi_Minh)');
+// cron.schedule('0 50 11 * * *', () => {
+//   console.log('[cron] feedback 11:50 fired at', new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }));
+//   runLunchFeedbackAt1130();
+// }, { timezone: 'Asia/Ho_Chi_Minh' });
 
 module.exports = { runLunchFeedbackAt1130 };
