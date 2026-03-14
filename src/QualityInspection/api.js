@@ -16,29 +16,13 @@ router.post('/save-result', requireAuth, async (req, res) => {
       });
     }
 
-    const {
-      inspectionType,
-      qrCode,
-      inspectionDateTime,
-      result,
-      transQuantity,
-      inputType
-    } = req.body;
-
-    const userID = req.user.userID;
     const employeeName = req.user.fullName;
     const employeeId = req.user.username;
 
-    // ✅ Payload gửi internal API
     const payload = {
-      inspectionType,
-      employeeId,     // 🔥 giờ là msnv
+      ...req.body,
+      employeeId,
       employeeName,
-      qrCode,
-      inspectionDateTime,
-      result,
-      transQuantity: Number(transQuantity ?? 0),
-      inputType: inputType,
     };
 
     const response = await axios.post(
@@ -53,8 +37,7 @@ router.post('/save-result', requireAuth, async (req, res) => {
       }
     );
 
-    res.json(response.data);
-
+    return res.json(response.data);
   } catch (err) {
     console.error('❌ Call internal API error:', {
       message: err.message,
@@ -63,7 +46,7 @@ router.post('/save-result', requireAuth, async (req, res) => {
       url: err.config?.url
     });
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Cannot save inspection result'
     });
