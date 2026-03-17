@@ -72,27 +72,29 @@ router.get('/orders', requireAuth, async (req, res) => {
     const {
       fromDate,
       toDate,
-      orderId,
       customerName,
       mstatus,
-      po
+      po,
+      page,
+      pageSize,
     } = req.query;
 
     const params = buildQueryParams({
       fromDate,
       toDate,
-      orderId,
       customerName,
       mstatus,
-      po
+      po,
+      page,
+      pageSize,
     });
 
     const response = await internalApi.get('/api/server/backup/mes/orders', {
       params,
       headers: {
         'X-User-Id': req.user?.userID || '',
-        'X-Username': req.user?.username || ''
-      }
+        'X-Username': req.user?.username || '',
+      },
     });
 
     return res.json(response.data);
@@ -100,7 +102,7 @@ router.get('/orders', requireAuth, async (req, res) => {
     logProxyError('Proxy get orders error', err);
     return res.status(err.response?.status || 500).json({
       success: false,
-      message: 'Không thể lấy danh sách đơn hàng'
+      message: 'Không thể lấy danh sách đơn hàng',
     });
   }
 });
@@ -124,7 +126,9 @@ router.get('/orders/:orderId/items', requireAuth, async (req, res) => {
       toDate,
       itemCode,
       mstatus,
-      po
+      po,
+      page,
+      pageSize,
     } = req.query;
 
     const params = buildQueryParams({
@@ -132,23 +136,28 @@ router.get('/orders/:orderId/items', requireAuth, async (req, res) => {
       toDate,
       itemCode,
       mstatus,
-      po
+      po,
+      page,
+      pageSize,
     });
 
-    const response = await internalApi.get(`/api/server/backup/mes/orders/${orderId}/items`, {
-      params,
-      headers: {
-        'X-User-Id': req.user?.userID || '',
-        'X-Username': req.user?.username || ''
+    const response = await internalApi.get(
+      `/api/server/backup/mes/orders/${orderId}/items`,
+      {
+        params,
+        headers: {
+          'X-User-Id': req.user?.userID || '',
+          'X-Username': req.user?.username || '',
+        },
       }
-    });
+    );
 
     return res.json(response.data);
   } catch (err) {
     logProxyError('Proxy get items error', err);
     return res.status(err.response?.status || 500).json({
       success: false,
-      message: 'Không thể lấy danh sách mã hàng'
+      message: 'Không thể lấy danh sách mã hàng',
     });
   }
 });
@@ -173,7 +182,9 @@ router.get('/items/:itemId/details', requireAuth, async (req, res) => {
       detailCode,
       mstatus,
       po,
-      hanghoaten
+      hanghoaten,
+      page,
+      pageSize,
     } = req.query;
 
     const params = buildQueryParams({
@@ -182,23 +193,28 @@ router.get('/items/:itemId/details', requireAuth, async (req, res) => {
       detailCode,
       mstatus,
       po,
-      hanghoaten
+      hanghoaten,
+      page,
+      pageSize,
     });
 
-    const response = await internalApi.get(`/api/server/backup/mes/items/${itemId}/details`, {
-      params,
-      headers: {
-        'X-User-Id': req.user?.userID || '',
-        'X-Username': req.user?.username || ''
+    const response = await internalApi.get(
+      `/api/server/backup/mes/items/${itemId}/details`,
+      {
+        params,
+        headers: {
+          'X-User-Id': req.user?.userID || '',
+          'X-Username': req.user?.username || '',
+        },
       }
-    });
+    );
 
     return res.json(response.data);
   } catch (err) {
     logProxyError('Proxy get details error', err);
     return res.status(err.response?.status || 500).json({
       success: false,
-      message: 'Không thể lấy danh sách chi tiết'
+      message: 'Không thể lấy danh sách chi tiết',
     });
   }
 });
@@ -219,29 +235,36 @@ router.get('/details/:detailId/batches', requireAuth, async (req, res) => {
     const {
       fromDate,
       toDate,
-      qualityStatus
+      qualityStatus,
+      page,
+      pageSize,
     } = req.query;
 
     const params = buildQueryParams({
       fromDate,
       toDate,
-      qualityStatus
+      qualityStatus,
+      page,
+      pageSize,
     });
 
-    const response = await internalApi.get(`/api/server/backup/mes/details/${detailId}/batches`, {
-      params,
-      headers: {
-        'X-User-Id': req.user?.userID || '',
-        'X-Username': req.user?.username || ''
+    const response = await internalApi.get(
+      `/api/server/backup/mes/details/${detailId}/batches`,
+      {
+        params,
+        headers: {
+          'X-User-Id': req.user?.userID || '',
+          'X-Username': req.user?.username || '',
+        },
       }
-    });
+    );
 
     return res.json(response.data);
   } catch (err) {
     logProxyError('Proxy get batches error', err);
     return res.status(err.response?.status || 500).json({
       success: false,
-      message: 'Không thể lấy danh sách batch'
+      message: 'Không thể lấy danh sách batch',
     });
   }
 });
