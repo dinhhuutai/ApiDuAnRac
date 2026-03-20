@@ -1414,8 +1414,8 @@ app.get("/api/paylips/import-stream/:jobId", async (req, res) => {
       
         // Push notify (nếu bạn muốn giữ cho thưởng năm)
         try {
-          // const info = await notifyPayslipPublished(title);
-          // log("pushed:", info);
+          const info = await notifyPayslipPublished(title);
+          log("pushed:", info);
         } catch (e) {
           log("push failed:", e?.message);
         }
@@ -1775,8 +1775,8 @@ app.get("/api/paylips/import-stream/:jobId", async (req, res) => {
     
         // Push notify (nếu bạn muốn giữ cho thưởng năm)
         try {
-          // const info = await notifyPayslipPublished(title);
-          // log("pushed:", info);
+          const info = await notifyPayslipPublished(title);
+          log("pushed:", info);
         } catch (e) {
           log("push failed:", e?.message);
         }
