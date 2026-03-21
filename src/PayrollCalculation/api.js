@@ -1414,8 +1414,8 @@ app.get("/api/paylips/import-stream/:jobId", async (req, res) => {
       
         // Push notify (nếu bạn muốn giữ cho thưởng năm)
         try {
-          const info = await notifyPayslipPublished(title);
-          log("pushed:", info);
+          // const info = await notifyPayslipPublished(title);
+          // log("pushed:", info);
         } catch (e) {
           log("push failed:", e?.message);
         }
@@ -1484,7 +1484,7 @@ app.get("/api/paylips/import-stream/:jobId", async (req, res) => {
         return cand;
       })(),
 
-      QBON: getIdxN(headerEff, "THƯỞNG HIỆU QUẢ CÔNG VIỆC", "THUONG HIEU QUA CONG VIEC"),
+      QBON: getIdxN(headerEff, "THƯỞNG HIỆU QUẢ CÔNG VIỆC", "THUONG HIEU QUA CONG VIEC", "THƯỞNG HOÀN THÀNH CÔNG VIỆC", "THUONG HOAN THANH CONG VIEC"),
       TOTAL: getIdxN(headerEff, "TỔNG LƯƠNG", "TONG LUONG"),
 
       CONGNGAY: getIdxN(headerEff, "CÔNG NGÀY", "CONG NGAY", "CÔNG HÀNH CHÁNH", "CONG HANH CHANH", "CÔNG HÀNH CHÍNH", "CONG HANH CHINH"),
@@ -1775,8 +1775,8 @@ app.get("/api/paylips/import-stream/:jobId", async (req, res) => {
     
         // Push notify (nếu bạn muốn giữ cho thưởng năm)
         try {
-          const info = await notifyPayslipPublished(title);
-          log("pushed:", info);
+          // const info = await notifyPayslipPublished(title);
+          // log("pushed:", info);
         } catch (e) {
           log("push failed:", e?.message);
         }
