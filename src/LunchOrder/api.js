@@ -310,8 +310,75 @@ function apiLunchOrder(app) {
 
 // GET: /api/foods/with-branches
 // Trả về [{ foodId, foodName, ..., branches: [{branchId, branchName, isActive, sortOrder}] }]
+// app.get("/api/foods/with-branches", async (req, res) => {
+//   const q = (req.query.q || "").trim();
+//   try {
+//     const pool = await poolPromise;
+
+//     // 1) lấy foods
+//     const foodsRs = q
+//       ? await pool.request()
+//           .input("q", sql.NVarChar, `%${q}%`)
+//           .query(`
+//             SELECT foodId, foodName, foodCode, description, imageUrl, colorCode
+//             FROM dbo.dc_Foods
+//             WHERE foodName LIKE @q OR foodCode LIKE @q
+//             ORDER BY foodName
+//           `)
+//       : await pool.request().query(`
+//             SELECT foodId, foodName, foodCode, description, imageUrl, colorCode
+//             FROM dbo.dc_Foods
+//             ORDER BY createdAt DESC
+//         `);
+
+//     const foods = foodsRs.recordset || [];
+//     if (foods.length === 0) return res.json([]);
+
+//     // 2) lấy tất cả branches theo danh sách foodId
+//     const ids = foods.map(f => f.foodId);
+//     // tạo bảng tạm cho IN list
+//     const tvp = new sql.Table(); // Table-Valued Param (tạm)
+//     tvp.columns.add('id', sql.Int);
+//     ids.forEach(id => tvp.rows.add(id));
+
+//     const branchesRs = await pool.request()
+//       .input('ids', tvp)
+//       .query(`
+//         WITH ids AS (
+//           SELECT id FROM @ids
+//         )
+//         SELECT b.branchId, b.foodId, b.branchName, b.isActive, b.sortOrder
+//         FROM dbo.dc_FoodBranches b
+//         INNER JOIN ids ON ids.id = b.foodId
+//         ORDER BY b.foodId, b.sortOrder, b.branchId
+//       `);
+
+//     const byFood = new Map();
+//     for (const b of branchesRs.recordset || []) {
+//       if (!byFood.has(b.foodId)) byFood.set(b.foodId, []);
+//       byFood.get(b.foodId).push({
+//         branchId: b.branchId,
+//         branchName: b.branchName,
+//         isActive: !!b.isActive,
+//         sortOrder: b.sortOrder ?? 0,
+//       });
+//     }
+
+//     const merged = foods.map(f => ({
+//       ...f,
+//       branches: byFood.get(f.foodId) || [],
+//     }));
+
+//     res.json(merged);
+//   } catch (err) {
+//     console.error("foods/with-branches error:", err);
+//     res.status(500).json({ error: "Server error" });
+//   }
+// });
+
 app.get("/api/foods/with-branches", async (req, res) => {
   const q = (req.query.q || "").trim();
+
   try {
     const pool = await poolPromise;
 
@@ -329,33 +396,42 @@ app.get("/api/foods/with-branches", async (req, res) => {
             SELECT foodId, foodName, foodCode, description, imageUrl, colorCode
             FROM dbo.dc_Foods
             ORDER BY createdAt DESC
-        `);
+          `);
 
     const foods = foodsRs.recordset || [];
-    if (foods.length === 0) return res.json([]);
+    if (foods.length === 0) {
+      return res.json([]);
+    }
 
-    // 2) lấy tất cả branches theo danh sách foodId
-    const ids = foods.map(f => f.foodId);
-    // tạo bảng tạm cho IN list
-    const tvp = new sql.Table(); // Table-Valued Param (tạm)
-    tvp.columns.add('id', sql.Int);
-    ids.forEach(id => tvp.rows.add(id));
+    // 2) lấy branches theo danh sách foodId bằng param IN
+    const ids = foods.map((f) => Number(f.foodId)).filter(Number.isFinite);
 
-    const branchesRs = await pool.request()
-      .input('ids', tvp)
-      .query(`
-        WITH ids AS (
-          SELECT id FROM @ids
-        )
-        SELECT b.branchId, b.foodId, b.branchName, b.isActive, b.sortOrder
-        FROM dbo.dc_FoodBranches b
-        INNER JOIN ids ON ids.id = b.foodId
-        ORDER BY b.foodId, b.sortOrder, b.branchId
-      `);
+    const branchReq = pool.request();
+    const idParams = ids.map((id, idx) => {
+      const key = `id${idx}`;
+      branchReq.input(key, sql.Int, id);
+      return `@${key}`;
+    });
+
+    const branchesRs = await branchReq.query(`
+      SELECT
+        b.branchId,
+        b.foodId,
+        b.branchName,
+        b.isActive,
+        b.sortOrder
+      FROM dbo.dc_FoodBranches b
+      WHERE b.foodId IN (${idParams.join(",")})
+      ORDER BY b.foodId, ISNULL(b.sortOrder, 0), b.branchId
+    `);
 
     const byFood = new Map();
+
     for (const b of branchesRs.recordset || []) {
-      if (!byFood.has(b.foodId)) byFood.set(b.foodId, []);
+      if (!byFood.has(b.foodId)) {
+        byFood.set(b.foodId, []);
+      }
+
       byFood.get(b.foodId).push({
         branchId: b.branchId,
         branchName: b.branchName,
@@ -364,15 +440,15 @@ app.get("/api/foods/with-branches", async (req, res) => {
       });
     }
 
-    const merged = foods.map(f => ({
+    const merged = foods.map((f) => ({
       ...f,
       branches: byFood.get(f.foodId) || [],
     }));
 
-    res.json(merged);
+    return res.json(merged);
   } catch (err) {
     console.error("foods/with-branches error:", err);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -3942,6 +4018,336 @@ app.get("/api/lunch-order/search/day", async (req, res) => {
   }
 });
 
+
+// app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
+//   try {
+//     const { date } = req.params;
+//     const { statusType = "re" } = req.query;
+
+//     if (!date) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Thiếu ngày"
+//       });
+//     }
+
+//     const type = String(statusType || "re").toLowerCase();
+
+//     if (!["re", "ws", "ot"].includes(type)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "statusType không hợp lệ"
+//       });
+//     }
+
+//     const selectedDate = new Date(date);
+
+//     let dayOfWeek = selectedDate.getDay();
+//     if (dayOfWeek === 0) dayOfWeek = 7;
+
+//     const mondayDate = new Date(selectedDate);
+//     const diff = mondayDate.getDate() - (mondayDate.getDay() || 7) + 1;
+//     mondayDate.setDate(diff);
+//     const monday = mondayDate.toISOString().split("T")[0];
+
+//     const pool = await poolPromise;
+
+//     const wm = await pool.request()
+//       .input("monday", sql.Date, monday)
+//       .query(`
+//         SELECT TOP 1 *
+//         FROM dbo.dc_WeeklyMenus
+//         WHERE weekStartMonday = @monday
+//         ORDER BY createdAt DESC
+//       `);
+
+//     if (wm.recordset.length === 0) {
+//       return res.json({
+//         success: true,
+//         data: {
+//           monday,
+//           dayOfWeek,
+//           foods: [],
+//           departments: [],
+//           rows: []
+//         }
+//       });
+//     }
+
+//     const weeklyMenuId = wm.recordset[0].weeklyMenuId;
+
+//     const departmentsResult = await pool.request().query(`
+//       SELECT departmentId, departmentName
+//       FROM dbo.dc_Department
+//       WHERE isAction = 1
+//       ORDER BY departmentName
+//     `);
+
+//     const departments = departmentsResult.recordset || [];
+
+//     const foodsRaw = await pool.request()
+//       .input("weeklyMenuId", sql.Int, weeklyMenuId)
+//       .input("dayOfWeek", sql.Int, dayOfWeek)
+//       .input("statusType", sql.VarChar, type)
+//       .query(`
+//         SELECT DISTINCT
+//             f.foodId,
+//             f.foodName,
+//             e.position,
+//             ISNULL(s.branchId, 0) AS branchId,
+//             fb.branchName
+//         FROM dbo.dc_WeeklyMenuEntries e
+//         JOIN dbo.dc_UserWeeklySelections s
+//             ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+//         JOIN dbo.dc_Foods f 
+//             ON e.foodId = f.foodId
+//         LEFT JOIN dbo.dc_FoodBranches fb
+//             ON s.branchId = fb.branchId
+//         WHERE e.weeklyMenuId = @weeklyMenuId
+//           AND e.dayOfWeek = @dayOfWeek
+//           AND e.statusType = @statusType
+//           AND ISNULL(s.isAction, 1) = 1
+//         ORDER BY e.position ASC
+//       `);
+
+//     const foodMap = {};
+
+//     for (const item of foodsRaw.recordset) {
+//       if (!foodMap[item.foodId]) {
+//         foodMap[item.foodId] = {
+//           foodId: item.foodId,
+//           foodName: item.foodName,
+//           position: item.position,
+//           branches: []
+//         };
+//       }
+
+//       const existed = foodMap[item.foodId].branches.find(
+//         (b) => Number(b.branchId || 0) === Number(item.branchId || 0)
+//       );
+
+//       if (!existed) {
+//         foodMap[item.foodId].branches.push({
+//           branchId: item.branchId || 0,
+//           branchName: item.branchName || null
+//         });
+//       }
+//     }
+
+//     const groupedFoods = Object.values(foodMap)
+//       .map((f) => ({
+//         ...f,
+//         branches: (f.branches || []).sort((a, b) =>
+//           String(a.branchName || "").localeCompare(String(b.branchName || ""), "vi")
+//         )
+//       }))
+//       .sort((a, b) => Number(a.position || 9999) - Number(b.position || 9999));
+
+//     let quantityField = "s.quantity";
+//     if (type === "ws") quantityField = "s.quantityWorkShift";
+//     if (type === "ot") quantityField = "s.quantityOvertime";
+
+//     const rowsResult = await pool.request()
+//       .input("weeklyMenuId", sql.Int, weeklyMenuId)
+//       .input("dayOfWeek", sql.Int, dayOfWeek)
+//       .input("statusType", sql.VarChar, type)
+//       .query(`
+//         SELECT
+//             d.departmentId,
+//             d.departmentName,
+
+//             u.userId AS userID,
+//             ISNULL(u.fullName, '') AS fullName,
+
+//             s.userWeeklySelectionId,
+//             s.weeklyMenuEntryId,
+//             ISNULL(s.branchId, 0) AS branchId,
+//             ISNULL(${quantityField}, 0) AS quantity,
+
+//             e.foodId,
+//             f.foodName,
+//             e.position,
+
+//             ISNULL(fb.branchName, '') AS branchName,
+//             ISNULL(s.isLocked, 0) AS isLocked
+//         FROM dbo.dc_UserWeeklySelections s
+//         INNER JOIN dbo.dc_WeeklyMenuEntries e
+//             ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+//         INNER JOIN dbo.Users u
+//             ON s.userId = u.userId
+//         INNER JOIN dbo.dc_Department d
+//             ON u.dc_DepartmentID = d.departmentId
+//         INNER JOIN dbo.dc_Foods f
+//             ON e.foodId = f.foodId
+//         LEFT JOIN dbo.dc_FoodBranches fb
+//             ON s.branchId = fb.branchId
+//         WHERE e.weeklyMenuId = @weeklyMenuId
+//           AND e.dayOfWeek = @dayOfWeek
+//           AND e.statusType = @statusType
+//           AND d.isAction = 1
+//           AND ISNULL(s.isAction, 1) = 1
+//           AND ISNULL(${quantityField}, 0) > 0
+//         ORDER BY
+//             d.departmentName,
+//             e.position,
+//             f.foodName,
+//             ISNULL(s.branchId, 0),
+//             u.userId
+//       `);
+
+//     return res.json({
+//       success: true,
+//       data: {
+//         monday,
+//         dayOfWeek,
+//         foods: groupedFoods,
+//         departments,
+//         rows: rowsResult.recordset || []
+//       }
+//     });
+
+//   } catch (err) {
+//     console.error("Report error:", err);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Lỗi lấy báo cáo"
+//     });
+//   }
+// });
+
+// app.put("/api/lunch-order/weekly-selection/update-quantity-by-type", async (req, res) => {
+//   try {
+//     const {
+//       userWeeklySelectionId,
+//       weeklyMenuEntryId,
+//       userID,
+//       branchId = 0,
+//       quantity,
+//       statusType = "re",
+//       updatedBy = "admin",
+//     } = req.body || {};
+
+//     if (!userWeeklySelectionId) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Thiếu userWeeklySelectionId",
+//       });
+//     }
+
+//     if (!weeklyMenuEntryId) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Thiếu weeklyMenuEntryId",
+//       });
+//     }
+
+//     if (!userID) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Thiếu userID",
+//       });
+//     }
+
+//     const type = String(statusType).toLowerCase();
+
+//     if (!["re", "ws", "ot"].includes(type)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "statusType không hợp lệ",
+//       });
+//     }
+
+//     const qty = Number(quantity);
+
+//     if (!Number.isFinite(qty) || qty < 0) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Số lượng không hợp lệ",
+//       });
+//     }
+
+//     const pool = await poolPromise;
+
+//     const checkRs = await pool
+//       .request()
+//       .input("userWeeklySelectionId", sql.Int, Number(userWeeklySelectionId))
+//       .input("weeklyMenuEntryId", sql.Int, Number(weeklyMenuEntryId))
+//       .input("userID", sql.Int, Number(userID))
+//       .input("branchId", sql.Int, Number(branchId || 0))
+//       .query(`
+//         SELECT TOP 1
+//           userWeeklySelectionId,
+//           weeklyMenuEntryId,
+//           userID,
+//           ISNULL(branchId, 0) AS branchId,
+//           ISNULL(isLocked, 0) AS isLocked,
+//           quantity,
+//           quantityWorkShift,
+//           quantityOvertime
+//         FROM dbo.dc_UserWeeklySelections
+//         WHERE
+//           userWeeklySelectionId = @userWeeklySelectionId
+//           AND weeklyMenuEntryId = @weeklyMenuEntryId
+//           AND userID = @userID
+//           AND ISNULL(branchId, 0) = @branchId
+//       `);
+
+//     const found = checkRs.recordset?.[0];
+
+//     if (!found) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "Không tìm thấy dòng cần cập nhật",
+//       });
+//     }
+
+//     if (found.isLocked) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Dòng này đã bị khóa, không thể chỉnh sửa",
+//       });
+//     }
+
+//     let setClause = "quantity = @quantity";
+//     if (type === "ws") setClause = "quantityWorkShift = @quantity";
+//     if (type === "ot") setClause = "quantityOvertime = @quantity";
+
+//     await pool
+//       .request()
+//       .input("userWeeklySelectionId", sql.Int, Number(userWeeklySelectionId))
+//       .input("quantity", sql.Int, qty)
+//       .input("updatedAt", sql.DateTime, new Date())
+//       .input("updatedBy", sql.NVarChar(100), updatedBy)
+//       .query(`
+//         UPDATE dbo.dc_UserWeeklySelections
+//         SET
+//           ${setClause},
+//           updatedAt = @updatedAt,
+//           updatedBy = @updatedBy
+//         WHERE userWeeklySelectionId = @userWeeklySelectionId
+//       `);
+
+//     return res.json({
+//       success: true,
+//       message: "Cập nhật số lượng thành công",
+//       data: {
+//         userWeeklySelectionId: Number(userWeeklySelectionId),
+//         weeklyMenuEntryId: Number(weeklyMenuEntryId),
+//         userID: Number(userID),
+//         branchId: Number(branchId || 0),
+//         quantity: qty,
+//         statusType: type,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("PUT /update-quantity-by-type error:", err);
+//     return res.status(500).json({
+//       success: false,
+//       message: err?.message || "Server error",
+//     });
+//   }
+// });
+
 app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
   try {
     const { date } = req.params;
@@ -3950,32 +4356,33 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
     if (!date) {
       return res.status(400).json({
         success: false,
-        message: "Thiếu ngày"
+        message: "Thiếu ngày",
+      });
+    }
+
+    const type = String(statusType || "re").toLowerCase();
+
+    if (!["re", "ws", "ot"].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: "statusType không hợp lệ",
       });
     }
 
     const selectedDate = new Date(date);
 
-    // ===== Tính thứ (Thứ 2 = 1)
     let dayOfWeek = selectedDate.getDay();
     if (dayOfWeek === 0) dayOfWeek = 7;
 
-    // ===== Tính Monday
-    const diff =
-      selectedDate.getDate() -
-      (selectedDate.getDay() || 7) +
-      1;
-
-    const monday = new Date(selectedDate.setDate(diff))
-      .toISOString()
-      .split("T")[0];
+    const mondayDate = new Date(selectedDate);
+    const diff = mondayDate.getDate() - (mondayDate.getDay() || 7) + 1;
+    mondayDate.setDate(diff);
+    const monday = mondayDate.toISOString().split("T")[0];
 
     const pool = await poolPromise;
 
-    // =====================================================
-    // 1️⃣ LẤY WEEKLY MENU
-    // =====================================================
-    const wm = await pool.request()
+    const wm = await pool
+      .request()
       .input("monday", sql.Date, monday)
       .query(`
         SELECT TOP 1 *
@@ -3992,16 +4399,13 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
           dayOfWeek,
           foods: [],
           departments: [],
-          rows: []
-        }
+          rows: [],
+        },
       });
     }
 
     const weeklyMenuId = wm.recordset[0].weeklyMenuId;
 
-    // =====================================================
-    // 2️⃣ LẤY TẤT CẢ BỘ PHẬN
-    // =====================================================
     const departmentsResult = await pool.request().query(`
       SELECT departmentId, departmentName
       FROM dbo.dc_Department
@@ -4009,102 +4413,128 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
       ORDER BY departmentName
     `);
 
-    const departments = departmentsResult.recordset;
+    const departments = departmentsResult.recordset || [];
 
-    // =====================================================
-    // 3️⃣ LẤY NHỮNG MÓN CÓ NGƯỜI ĐẶT TRONG NGÀY
-    // =====================================================
-    const foodsRaw = await pool.request()
+    const foodsRaw = await pool
+  .request()
   .input("weeklyMenuId", sql.Int, weeklyMenuId)
   .input("dayOfWeek", sql.Int, dayOfWeek)
-  .input("statusType", sql.VarChar, statusType)
+  .input("statusType", sql.VarChar, type)
   .query(`
     SELECT DISTINCT
+        e.weeklyMenuEntryId,
         f.foodId,
         f.foodName,
         e.position,
         ISNULL(s.branchId, 0) AS branchId,
         fb.branchName
     FROM dbo.dc_WeeklyMenuEntries e
-    JOIN dbo.dc_UserWeeklySelections s
-        ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
-    JOIN dbo.dc_Foods f 
+    INNER JOIN dbo.dc_Foods f 
         ON e.foodId = f.foodId
+    LEFT JOIN dbo.dc_UserWeeklySelections s
+        ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
     LEFT JOIN dbo.dc_FoodBranches fb
-        ON s.branchId = fb.branchId
+        ON ISNULL(s.branchId, 0) = fb.branchId
     WHERE e.weeklyMenuId = @weeklyMenuId
       AND e.dayOfWeek = @dayOfWeek
       AND e.statusType = @statusType
     ORDER BY e.position ASC
   `);
 
-    // ===== Group food theo branch
     const foodMap = {};
 
-    for (const item of foodsRaw.recordset) {
-      if (!foodMap[item.foodId]) {
-        foodMap[item.foodId] = {
-          foodId: item.foodId,
-          foodName: item.foodName,
-          position: item.position,
-          branches: []
-        };
-      }
+for (const item of foodsRaw.recordset) {
+  if (!foodMap[item.foodId]) {
+    foodMap[item.foodId] = {
+      foodId: item.foodId,
+      foodName: item.foodName,
+      position: item.position,
+      branches: [],
+    };
+  }
 
-      foodMap[item.foodId].branches.push({
-        branchId: item.branchId || 0,
-        branchName: item.branchName || null
-      });
-    }
+  const normalizedBranchId = Number(item.branchId || 0);
+
+  const existed = foodMap[item.foodId].branches.find(
+    (b) => Number(b.branchId || 0) === normalizedBranchId
+  );
+
+  if (!existed) {
+    foodMap[item.foodId].branches.push({
+      weeklyMenuEntryId: item.weeklyMenuEntryId,
+      branchId: normalizedBranchId,
+      branchName: item.branchName || null,
+    });
+  }
+}
 
     const groupedFoods = Object.values(foodMap)
-  .sort((a, b) => a.position - b.position);
+  .map((f) => ({
+    ...f,
+    branches:
+      f.branches && f.branches.length > 0
+        ? f.branches.sort((a, b) =>
+            String(a.branchName || "").localeCompare(
+              String(b.branchName || ""),
+              "vi"
+            )
+          )
+        : [],
+  }))
+  .sort((a, b) => Number(a.position || 9999) - Number(b.position || 9999));
+  
 
-    // =====================================================
-    // 4️⃣ LẤY SỐ LƯỢNG THEO BỘ PHẬN + FOOD + BRANCH
-    // =====================================================
-    const rowsResult = await pool.request()
+    let qtySelect = "ISNULL(s.quantity, 0)";
+    if (type === "ws") qtySelect = "ISNULL(s.quantityWorkShift, 0)";
+    if (type === "ot") qtySelect = "ISNULL(s.quantityOvertime, 0)";
+
+    const rowsResult = await pool
+      .request()
       .input("weeklyMenuId", sql.Int, weeklyMenuId)
       .input("dayOfWeek", sql.Int, dayOfWeek)
-      .input("statusType", sql.VarChar, statusType)
+      .input("statusType", sql.VarChar, type)
       .query(`
-    SELECT 
-        d.departmentId,
-        d.departmentName,
-        f.foodId,
-        e.position,
-        ISNULL(s.branchId, 0) AS branchId,
-        SUM(
-          ISNULL(s.quantity,0)
-          + ISNULL(s.quantityOvertime,0)
-          + ISNULL(s.quantityWorkShift,0)
-        ) AS totalQuantity
-    FROM dbo.dc_Department d
-    LEFT JOIN dbo.Users u 
-        ON u.dc_DepartmentID = d.departmentId
-    LEFT JOIN dbo.dc_UserWeeklySelections s
-        ON s.userId = u.userId
-    LEFT JOIN dbo.dc_WeeklyMenuEntries e 
-        ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
-        AND e.weeklyMenuId = @weeklyMenuId
-        AND e.dayOfWeek = @dayOfWeek
-        AND e.statusType = @statusType
-    LEFT JOIN dbo.dc_Foods f 
-        ON e.foodId = f.foodId
-    WHERE d.isAction = 1
-    GROUP BY 
-        d.departmentId,
-        d.departmentName,
-        f.foodId,
-        e.position,
-        s.branchId
-    HAVING SUM(
-          ISNULL(s.quantity,0)
-          + ISNULL(s.quantityOvertime,0)
-          + ISNULL(s.quantityWorkShift,0)
-        ) > 0
-    ORDER BY d.departmentName, e.position
-`);
+        SELECT
+            d.departmentId,
+            d.departmentName,
+
+            u.userId AS userID,
+            ISNULL(u.fullName, '') AS fullName,
+
+            s.userWeeklySelectionId,
+            e.weeklyMenuEntryId,
+            ISNULL(s.branchId, 0) AS branchId,
+            ${qtySelect} AS quantity,
+
+            e.foodId,
+            f.foodName,
+            e.position,
+
+            ISNULL(fb.branchName, '') AS branchName,
+            ISNULL(s.isLocked, 0) AS isLocked
+        FROM dbo.dc_WeeklyMenuEntries e
+        INNER JOIN dbo.dc_Foods f
+            ON e.foodId = f.foodId
+        INNER JOIN dbo.Users u
+            ON 1 = 1
+        INNER JOIN dbo.dc_Department d
+            ON u.dc_DepartmentID = d.departmentId
+        LEFT JOIN dbo.dc_UserWeeklySelections s
+            ON s.weeklyMenuEntryId = e.weeklyMenuEntryId
+           AND s.userID = u.userId
+        LEFT JOIN dbo.dc_FoodBranches fb
+            ON ISNULL(s.branchId, 0) = fb.branchId
+        WHERE e.weeklyMenuId = @weeklyMenuId
+          AND e.dayOfWeek = @dayOfWeek
+          AND e.statusType = @statusType
+          AND d.isAction = 1
+        ORDER BY
+            d.departmentName,
+            e.position,
+            f.foodName,
+            ISNULL(s.branchId, 0),
+            u.userId
+      `);
 
     return res.json({
       success: true,
@@ -4113,15 +4543,658 @@ app.get("/api/lunch-order/report/by-date/:date", async (req, res) => {
         dayOfWeek,
         foods: groupedFoods,
         departments,
-        rows: rowsResult.recordset
-      }
+        rows: rowsResult.recordset || [],
+      },
     });
-
   } catch (err) {
     console.error("Report error:", err);
     return res.status(500).json({
       success: false,
-      message: "Lỗi lấy báo cáo"
+      message: "Lỗi lấy báo cáo",
+    });
+  }
+});
+
+app.put("/api/lunch-order/weekly-selection/update-quantity-by-type", async (req, res) => {
+  try {
+    const {
+      userWeeklySelectionId,
+      weeklyMenuEntryId,
+      userID,
+      branchId = 0,
+      quantity,
+      statusType = "re",
+      updatedBy,
+    } = req.body || {};
+
+    if (!weeklyMenuEntryId) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu weeklyMenuEntryId",
+      });
+    }
+
+    if (!userID) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu userID",
+      });
+    }
+
+    const type = String(statusType || "re").toLowerCase();
+
+    if (!["re", "ws", "ot"].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: "statusType không hợp lệ",
+      });
+    }
+
+    const qty = Number(quantity);
+
+    if (!Number.isFinite(qty) || qty < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Số lượng không hợp lệ. Chỉ nhận số >= 0",
+      });
+    }
+
+    const loginUserId =
+      req.user?.userID ||
+      req.user?.userId ||
+      req.user?.id ||
+      updatedBy ||
+      "admin";
+
+    const pool = await poolPromise;
+
+    const checkRs = await pool
+      .request()
+      .input(
+        "userWeeklySelectionId",
+        sql.Int,
+        userWeeklySelectionId ? Number(userWeeklySelectionId) : null
+      )
+      .input("weeklyMenuEntryId", sql.Int, Number(weeklyMenuEntryId))
+      .input("userID", sql.Int, Number(userID))
+      .input("branchId", sql.Int, Number(branchId || 0))
+      .query(`
+        SELECT TOP 1
+          userWeeklySelectionId,
+          weeklyMenuEntryId,
+          userID,
+          ISNULL(branchId, 0) AS branchId,
+          quantity,
+          quantityWorkShift,
+          quantityOvertime
+        FROM dbo.dc_UserWeeklySelections
+        WHERE
+          (
+            @userWeeklySelectionId IS NOT NULL
+            AND userWeeklySelectionId = @userWeeklySelectionId
+          )
+          OR
+          (
+            weeklyMenuEntryId = @weeklyMenuEntryId
+            AND userID = @userID
+            AND ISNULL(branchId, 0) = @branchId
+          )
+        ORDER BY userWeeklySelectionId DESC
+      `);
+
+    const found = checkRs.recordset?.[0] || null;
+
+    if (qty === 0) {
+      await pool
+        .request()
+        .input("weeklyMenuEntryId", sql.Int, Number(weeklyMenuEntryId))
+        .input("userID", sql.Int, Number(userID))
+        .input("branchId", sql.Int, Number(branchId || 0))
+        .query(`
+          DELETE FROM dbo.dc_UserWeeklySelections
+          WHERE
+            weeklyMenuEntryId = @weeklyMenuEntryId
+            AND userID = @userID
+            AND ISNULL(branchId, 0) = @branchId
+        `);
+
+      return res.json({
+        success: true,
+        message: "Đã xóa bản ghi vì số lượng = 0",
+        data: {
+          mode: "delete",
+          weeklyMenuEntryId: Number(weeklyMenuEntryId),
+          userID: Number(userID),
+          branchId: Number(branchId || 0),
+          quantity: 0,
+          statusType: type,
+          updatedBy: String(loginUserId),
+        },
+      });
+    }
+
+    let setClause = "quantity = @quantity";
+    if (type === "ws") setClause = "quantityWorkShift = @quantity";
+    if (type === "ot") setClause = "quantityOvertime = @quantity";
+
+    if (found) {
+      await pool
+        .request()
+        .input("userWeeklySelectionId", sql.Int, Number(found.userWeeklySelectionId))
+        .input("quantity", sql.Int, qty)
+        .input("updatedAt", sql.DateTime2, new Date())
+        .input("updatedBy", sql.NVarChar(200), String(loginUserId))
+        .query(`
+          UPDATE dbo.dc_UserWeeklySelections
+          SET
+            ${setClause},
+            updatedAt = @updatedAt,
+            updatedBy = @updatedBy,
+            isAction = 1
+          WHERE userWeeklySelectionId = @userWeeklySelectionId
+        `);
+
+      return res.json({
+        success: true,
+        message: "Cập nhật số lượng thành công",
+        data: {
+          mode: "update",
+          userWeeklySelectionId: Number(found.userWeeklySelectionId),
+          weeklyMenuEntryId: Number(weeklyMenuEntryId),
+          userID: Number(userID),
+          branchId: Number(branchId || 0),
+          quantity: qty,
+          statusType: type,
+          updatedBy: String(loginUserId),
+        },
+      });
+    }
+
+    let quantityRe = null;
+    let quantityWs = null;
+    let quantityOt = null;
+
+    if (type === "re") quantityRe = qty;
+    if (type === "ws") quantityWs = qty;
+    if (type === "ot") quantityOt = qty;
+
+    const insertRs = await pool
+      .request()
+      .input("weeklyMenuEntryId", sql.Int, Number(weeklyMenuEntryId))
+      .input("userID", sql.Int, Number(userID))
+      .input("branchId", sql.Int, Number(branchId || 0))
+      .input("quantity", sql.Int, quantityRe)
+      .input("quantityWorkShift", sql.Int, quantityWs)
+      .input("quantityOvertime", sql.Int, quantityOt)
+      .input("createdAt", sql.DateTime2, new Date())
+      .input("createdBy", sql.NVarChar(200), String(loginUserId))
+      .input("updatedAt", sql.DateTime2, new Date())
+      .input("updatedBy", sql.NVarChar(200), String(loginUserId))
+      .query(`
+        INSERT INTO dbo.dc_UserWeeklySelections
+        (
+          weeklyMenuEntryId,
+          userID,
+          quantity,
+          branchId,
+          isAction,
+          isLocked,
+          createdAt,
+          createdBy,
+          updatedAt,
+          updatedBy,
+          selectedByUserId,
+          quantityOvertime,
+          quantityWorkShift
+        )
+        VALUES
+        (
+          @weeklyMenuEntryId,
+          @userID,
+          @quantity,
+          NULLIF(@branchId, 0),
+          1,
+          1,
+          @createdAt,
+          @createdBy,
+          @updatedAt,
+          @updatedBy,
+          NULL,
+          @quantityOvertime,
+          @quantityWorkShift
+        );
+
+        SELECT SCOPE_IDENTITY() AS userWeeklySelectionId;
+      `);
+
+    const newId = insertRs.recordset?.[0]?.userWeeklySelectionId
+      ? Number(insertRs.recordset[0].userWeeklySelectionId)
+      : null;
+
+    return res.json({
+      success: true,
+      message: "Thêm mới và lưu số lượng thành công",
+      data: {
+        mode: "insert",
+        userWeeklySelectionId: newId,
+        weeklyMenuEntryId: Number(weeklyMenuEntryId),
+        userID: Number(userID),
+        branchId: Number(branchId || 0),
+        quantity: qty,
+        statusType: type,
+        isLocked: 1,
+        updatedBy: String(loginUserId),
+      },
+    });
+  } catch (err) {
+    console.error("PUT /update-quantity-by-type error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || "Server error",
+    });
+  }
+});
+
+
+app.get("/api/lunch-order/settings/current", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+
+    const rs = await pool.request().query(`
+      SELECT TOP 1
+        Id,
+        TimeModifyRE,
+        TimeCancelRE,
+        TimeModifyWS,
+        TimeCancelWS,
+        TimeModifyOT,
+        TimeCancelOT,
+        IsActiveRE,
+        IsActiveWS,
+        IsActiveOT,
+        UpdatedAt,
+        UpdatedBy
+      FROM dbo.dc_Settings
+      ORDER BY UpdatedAt DESC, Id DESC
+    `);
+
+    const row = rs.recordset?.[0] || null;
+
+    if (!row) {
+      return res.json({
+        success: true,
+        data: null,
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        id: row.Id,
+
+        timeModifyRE: row.TimeModifyRE,
+        timeCancelRE: row.TimeCancelRE,
+
+        timeModifyWS: row.TimeModifyWS,
+        timeCancelWS: row.TimeCancelWS,
+
+        timeModifyOT: row.TimeModifyOT,
+        timeCancelOT: row.TimeCancelOT,
+
+        isActiveRE: !!row.IsActiveRE,
+        isActiveWS: !!row.IsActiveWS,
+        isActiveOT: !!row.IsActiveOT,
+
+        updatedAt: row.UpdatedAt,
+        updatedBy: row.UpdatedBy,
+      },
+    });
+  } catch (err) {
+    console.error("Lunch settings current error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+function normalizeTimeOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+
+  const s = String(v).trim();
+  const m = s.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!m) return null;
+
+  return `${m[1]}:${m[2]}:00`;
+}
+
+function isValidTimeOrNull(v) {
+  if (v === null || v === undefined || v === "") return true;
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(String(v).trim());
+}
+
+function validateTimePair(label, modifyTime, cancelTime) {
+  if (!isValidTimeOrNull(modifyTime)) {
+    return `${label}: Giờ sửa không hợp lệ. Định dạng đúng là HH:mm`;
+  }
+
+  if (!isValidTimeOrNull(cancelTime)) {
+    return `${label}: Giờ huỷ không hợp lệ. Định dạng đúng là HH:mm`;
+  }
+
+  if (modifyTime && cancelTime && modifyTime > cancelTime) {
+    return `${label}: Giờ sửa phải nhỏ hơn hoặc bằng giờ huỷ`;
+  }
+
+  return "";
+}
+
+app.put("/api/lunch-order/settings/current", async (req, res) => {
+  try {
+    const {
+      timeModifyRE,
+      timeCancelRE,
+      timeModifyWS,
+      timeCancelWS,
+      timeModifyOT,
+      timeCancelOT,
+      isActiveRE,
+      isActiveWS,
+      isActiveOT,
+      updatedBy,
+    } = req.body || {};
+
+    const errRE = validateTimePair("RE", timeModifyRE, timeCancelRE);
+    if (errRE) {
+      return res.status(400).json({ success: false, message: errRE });
+    }
+
+    const errWS = validateTimePair("WS", timeModifyWS, timeCancelWS);
+    if (errWS) {
+      return res.status(400).json({ success: false, message: errWS });
+    }
+
+    const errOT = validateTimePair("OT", timeModifyOT, timeCancelOT);
+    if (errOT) {
+      return res.status(400).json({ success: false, message: errOT });
+    }
+
+    const nTimeModifyRE = normalizeTimeOrNull(timeModifyRE);
+    const nTimeCancelRE = normalizeTimeOrNull(timeCancelRE);
+    const nTimeModifyWS = normalizeTimeOrNull(timeModifyWS);
+    const nTimeCancelWS = normalizeTimeOrNull(timeCancelWS);
+    const nTimeModifyOT = normalizeTimeOrNull(timeModifyOT);
+    const nTimeCancelOT = normalizeTimeOrNull(timeCancelOT);
+
+    const pool = await poolPromise;
+    const parseBit = (v) => (v ? 1 : 0);
+
+    const existing = await pool.request().query(`
+      SELECT TOP 1 Id
+      FROM dbo.dc_Settings
+      ORDER BY Id DESC
+    `);
+
+    const existingRow = existing.recordset?.[0] || null;
+
+    if (existingRow) {
+      await pool.request()
+        .input("Id", sql.Int, existingRow.Id)
+        .input("TimeModifyRE", sql.NVarChar(8), nTimeModifyRE)
+        .input("TimeCancelRE", sql.NVarChar(8), nTimeCancelRE)
+        .input("TimeModifyWS", sql.NVarChar(8), nTimeModifyWS)
+        .input("TimeCancelWS", sql.NVarChar(8), nTimeCancelWS)
+        .input("TimeModifyOT", sql.NVarChar(8), nTimeModifyOT)
+        .input("TimeCancelOT", sql.NVarChar(8), nTimeCancelOT)
+        .input("IsActiveRE", sql.Bit, parseBit(isActiveRE))
+        .input("IsActiveWS", sql.Bit, parseBit(isActiveWS))
+        .input("IsActiveOT", sql.Bit, parseBit(isActiveOT))
+        .input("UpdatedAt", sql.DateTime, new Date())
+        .input("UpdatedBy", sql.NVarChar(100), updatedBy || "admin")
+        .query(`
+          UPDATE dbo.dc_Settings
+          SET
+            TimeModifyRE = CASE WHEN @TimeModifyRE IS NULL THEN NULL ELSE CAST(@TimeModifyRE AS time) END,
+            TimeCancelRE = CASE WHEN @TimeCancelRE IS NULL THEN NULL ELSE CAST(@TimeCancelRE AS time) END,
+            TimeModifyWS = CASE WHEN @TimeModifyWS IS NULL THEN NULL ELSE CAST(@TimeModifyWS AS time) END,
+            TimeCancelWS = CASE WHEN @TimeCancelWS IS NULL THEN NULL ELSE CAST(@TimeCancelWS AS time) END,
+            TimeModifyOT = CASE WHEN @TimeModifyOT IS NULL THEN NULL ELSE CAST(@TimeModifyOT AS time) END,
+            TimeCancelOT = CASE WHEN @TimeCancelOT IS NULL THEN NULL ELSE CAST(@TimeCancelOT AS time) END,
+            IsActiveRE = @IsActiveRE,
+            IsActiveWS = @IsActiveWS,
+            IsActiveOT = @IsActiveOT,
+            UpdatedAt = @UpdatedAt,
+            UpdatedBy = @UpdatedBy
+          WHERE Id = @Id
+        `);
+
+      return res.json({
+        success: true,
+        message: "Cập nhật cấu hình thành công",
+      });
+    }
+
+    await pool.request()
+      .input("TimeModifyRE", sql.NVarChar(8), nTimeModifyRE)
+      .input("TimeCancelRE", sql.NVarChar(8), nTimeCancelRE)
+      .input("TimeModifyWS", sql.NVarChar(8), nTimeModifyWS)
+      .input("TimeCancelWS", sql.NVarChar(8), nTimeCancelWS)
+      .input("TimeModifyOT", sql.NVarChar(8), nTimeModifyOT)
+      .input("TimeCancelOT", sql.NVarChar(8), nTimeCancelOT)
+      .input("IsActiveRE", sql.Bit, parseBit(isActiveRE))
+      .input("IsActiveWS", sql.Bit, parseBit(isActiveWS))
+      .input("IsActiveOT", sql.Bit, parseBit(isActiveOT))
+      .input("UpdatedAt", sql.DateTime, new Date())
+      .input("UpdatedBy", sql.NVarChar(100), updatedBy || "admin")
+      .query(`
+        INSERT INTO dbo.dc_Settings (
+          TimeModifyRE,
+          TimeCancelRE,
+          TimeModifyWS,
+          TimeCancelWS,
+          TimeModifyOT,
+          TimeCancelOT,
+          IsActiveRE,
+          IsActiveWS,
+          IsActiveOT,
+          UpdatedAt,
+          UpdatedBy
+        )
+        VALUES (
+          CASE WHEN @TimeModifyRE IS NULL THEN NULL ELSE CAST(@TimeModifyRE AS time) END,
+          CASE WHEN @TimeCancelRE IS NULL THEN NULL ELSE CAST(@TimeCancelRE AS time) END,
+          CASE WHEN @TimeModifyWS IS NULL THEN NULL ELSE CAST(@TimeModifyWS AS time) END,
+          CASE WHEN @TimeCancelWS IS NULL THEN NULL ELSE CAST(@TimeCancelWS AS time) END,
+          CASE WHEN @TimeModifyOT IS NULL THEN NULL ELSE CAST(@TimeModifyOT AS time) END,
+          CASE WHEN @TimeCancelOT IS NULL THEN NULL ELSE CAST(@TimeCancelOT AS time) END,
+          @IsActiveRE,
+          @IsActiveWS,
+          @IsActiveOT,
+          @UpdatedAt,
+          @UpdatedBy
+        )
+      `);
+
+    return res.json({
+      success: true,
+      message: "Tạo cấu hình thành công",
+    });
+  } catch (err) {
+    console.error("Save lunch settings error:", err);
+    res.status(500).json({
+      success: false,
+      message: err?.message || "Server error",
+    });
+  }
+});
+
+
+app.get("/api/lunch-order/user-locked-days", async (req, res) => {
+  try {
+    const {
+      userId,
+      weeklyMenuId,
+      statusType = "re",
+      hasSecretary = "false",
+    } = req.query;
+
+    if (!userId || !weeklyMenuId) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu userId hoặc weeklyMenuId",
+      });
+    }
+
+    const pool = await poolPromise;
+    const request = pool
+      .request()
+      .input("UserId", sql.Int, Number(userId))
+      .input("WeeklyMenuId", sql.Int, Number(weeklyMenuId))
+      .input("StatusType", sql.VarChar(10), String(statusType).toLowerCase());
+
+    let query = "";
+
+    if (hasSecretary === "true") {
+      query = `
+        SELECT
+          e.dayOfWeek,
+          s.userWeeklySelectionId,
+          ISNULL(s.isLocked, 0) AS isLocked
+        FROM dbo.dc_UserWeeklySelections s
+        JOIN dbo.dc_WeeklyMenuEntries e
+          ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
+        JOIN dbo.Users u
+          ON u.userID = s.userID
+        WHERE e.weeklyMenuId = @WeeklyMenuId
+          AND LOWER(ISNULL(e.statusType, 're')) = @StatusType
+          AND u.dc_DepartmentID = (
+            SELECT dc_DepartmentID
+            FROM dbo.Users
+            WHERE userID = @UserId
+          )
+          AND ISNULL(s.isAction, 1) = 1
+          AND ISNULL(e.isAction, 1) = 1
+        ORDER BY e.dayOfWeek, s.userWeeklySelectionId
+      `;
+    } else {
+      query = `
+        SELECT
+          e.dayOfWeek,
+          s.userWeeklySelectionId,
+          ISNULL(s.isLocked, 0) AS isLocked
+        FROM dbo.dc_UserWeeklySelections s
+        JOIN dbo.dc_WeeklyMenuEntries e
+          ON e.weeklyMenuEntryId = s.weeklyMenuEntryId
+        WHERE s.userID = @UserId
+          AND e.weeklyMenuId = @WeeklyMenuId
+          AND LOWER(ISNULL(e.statusType, 're')) = @StatusType
+          AND ISNULL(s.isAction, 1) = 1
+          AND ISNULL(e.isAction, 1) = 1
+        ORDER BY e.dayOfWeek, s.userWeeklySelectionId
+      `;
+    }
+
+    const rs = await request.query(query);
+
+    const data = {};
+
+    for (const row of rs.recordset) {
+      const day = Number(row.dayOfWeek);
+
+      if (!data[day]) {
+        data[day] = {
+          isLocked: false,
+          userWeeklySelectionIds: [],
+        };
+      }
+
+      data[day].isLocked = data[day].isLocked || !!row.isLocked;
+      data[day].userWeeklySelectionIds.push(Number(row.userWeeklySelectionId));
+    }
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (err) {
+    console.error("GET user-locked-days error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Không lấy được trạng thái chốt ngày",
+    });
+  }
+});
+
+/**
+ * PUT /api/lunch-order/lock-day
+ * body: { userId, weeklyMenuId, dayOfWeek, statusType, updatedBy }
+ */
+app.put("/api/lunch-order/lock-day", async (req, res) => {
+  const pool = await poolPromise;
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    const {
+      userWeeklySelectionIds = [],
+      updatedBy,
+      dayOfWeek,
+    } = req.body;
+
+    if (!Array.isArray(userWeeklySelectionIds) || !userWeeklySelectionIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Thiếu userWeeklySelectionIds",
+      });
+    }
+
+    await transaction.begin();
+
+    const request = new sql.Request(transaction);
+    request.input("UpdatedBy", sql.NVarChar(255), String(updatedBy || ""));
+
+    // lọc ID hợp lệ
+    const validIds = userWeeklySelectionIds
+      .map(Number)
+      .filter((x) => Number.isInteger(x) && x > 0);
+
+    if (!validIds.length) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Danh sách ID không hợp lệ",
+      });
+    }
+
+    const idsSql = validIds.join(",");
+
+    const updateResult = await request.query(`
+      UPDATE dbo.dc_UserWeeklySelections
+      SET
+        isLocked = 1,
+        updatedAt = GETDATE(),
+        updatedBy = @UpdatedBy
+      WHERE userWeeklySelectionId IN (${idsSql})
+        AND ISNULL(isLocked, 0) = 0
+    `);
+
+    await transaction.commit();
+
+    return res.json({
+      success: true,
+      message: "Chốt ngày thành công",
+      dayOfWeek: Number(dayOfWeek),
+      userWeeklySelectionIds: validIds,
+      rowsAffected: updateResult.rowsAffected?.[0] || 0,
+    });
+  } catch (err) {
+    console.error("PUT lock-day error:", err);
+    try {
+      await transaction.rollback();
+    } catch (_) {}
+
+    return res.status(500).json({
+      success: false,
+      message: "Không thể chốt ngày",
     });
   }
 });
