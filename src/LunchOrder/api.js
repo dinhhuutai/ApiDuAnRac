@@ -4672,8 +4672,6 @@ app.put("/api/lunch-order/weekly-selection/update-quantity-by-type", async (req,
     }
 
     let setClause = "quantity = @quantity";
-    if (type === "ws") setClause = "quantityWorkShift = @quantity";
-    if (type === "ot") setClause = "quantityOvertime = @quantity";
 
     if (found) {
       await pool
@@ -4708,22 +4706,12 @@ app.put("/api/lunch-order/weekly-selection/update-quantity-by-type", async (req,
       });
     }
 
-    let quantityRe = null;
-    let quantityWs = null;
-    let quantityOt = null;
-
-    if (type === "re") quantityRe = qty;
-    if (type === "ws") quantityWs = qty;
-    if (type === "ot") quantityOt = qty;
-
     const insertRs = await pool
       .request()
       .input("weeklyMenuEntryId", sql.Int, Number(weeklyMenuEntryId))
       .input("userID", sql.Int, Number(userID))
       .input("branchId", sql.Int, Number(branchId || 0))
-      .input("quantity", sql.Int, quantityRe)
-      .input("quantityWorkShift", sql.Int, quantityWs)
-      .input("quantityOvertime", sql.Int, quantityOt)
+      .input("quantity", sql.Int, qty)
       .input("createdAt", sql.DateTime2, new Date())
       .input("createdBy", sql.NVarChar(200), String(loginUserId))
       .input("updatedAt", sql.DateTime2, new Date())
@@ -4741,9 +4729,7 @@ app.put("/api/lunch-order/weekly-selection/update-quantity-by-type", async (req,
           createdBy,
           updatedAt,
           updatedBy,
-          selectedByUserId,
-          quantityOvertime,
-          quantityWorkShift
+          selectedByUserId
         )
         VALUES
         (
@@ -4757,9 +4743,7 @@ app.put("/api/lunch-order/weekly-selection/update-quantity-by-type", async (req,
           @createdBy,
           @updatedAt,
           @updatedBy,
-          NULL,
-          @quantityOvertime,
-          @quantityWorkShift
+          NULL
         );
 
         SELECT SCOPE_IDENTITY() AS userWeeklySelectionId;
