@@ -4485,8 +4485,6 @@ for (const item of foodsRaw.recordset) {
   
 
     let qtySelect = "ISNULL(s.quantity, 0)";
-    if (type === "ws") qtySelect = "ISNULL(s.quantityWorkShift, 0)";
-    if (type === "ot") qtySelect = "ISNULL(s.quantityOvertime, 0)";
 
     const rowsResult = await pool
       .request()

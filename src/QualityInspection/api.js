@@ -113,7 +113,7 @@ router.get('/admin-history-summary', requireAuth, async (req, res) => {
     const response = await axios.get(
       `${INTERNAL_API}/api/server/backup/quality-inspection/admin-history-summary`,
       {
-        timeout: 60000,
+        timeout: 180000,
         headers: {
           'Content-Type': 'application/json',
           'X-Internal-Request': 'WEBAPP'
