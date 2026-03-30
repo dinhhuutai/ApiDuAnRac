@@ -336,8 +336,8 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
 `;
 
     const bgdEmails = [
-      //"hanhchaien@yahoo.com",
-      //"quangthongco@gmail.com",
+      "hanhchaien@yahoo.com",
+      "quangthongco@gmail.com",
     ];
 
     const otherEmails = [
