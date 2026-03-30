@@ -14,7 +14,7 @@ const transporter = nodemailer.createTransport({
 async function sendSuggestionEmail({ to, subject, html }) {
   try {
     const info = await transporter.sendMail({
-      from: '"Hệ thống góp ý Thuận Hưng Long An" <dinhhuutai317678@gmail.com>',
+      from: '"Hòm thư Góp ý Thuận Hưng Long An" <dinhhuutai317678@gmail.com>',
       to,
       subject,
       html,

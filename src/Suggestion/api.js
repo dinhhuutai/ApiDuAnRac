@@ -8,6 +8,124 @@ const { sendSuggestionEmail } = require("../utils/mailer");
 
 function apiSuggestion(app) {
 
+// app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res) => {
+//   try {
+//     const pool = await poolPromise;
+//     const {
+//       suggestionCategorieId,
+//       content,
+//       wantContact,
+//       sender_name,
+//       sender_department,
+//       sender_phone,
+//       rating // <--- new
+//     } = req.body;
+
+//     // parse rating: bắt buộc nếu client gửi phải là 1..5
+//     let ratingVal = null;
+//     if (rating !== undefined && rating !== null && String(rating).trim() !== '') {
+//       const r = Number(rating);
+//       if (!Number.isInteger(r) || r < 1 || r > 5) {
+//         return res.status(400).json({ success: false, message: 'rating phải là số nguyên 1..5' });
+//       }
+//       ratingVal = r;
+//     } else {
+//       // Nếu bạn muốn bắt buộc luôn phải có rating, uncomment dòng dưới:
+//       // return res.status(400).json({ success:false, message: 'rating bị thiếu (1..5)' });
+//       // Hiện để cho phép không gửi rating -> lưu NULL
+//       ratingVal = null;
+//     }
+
+//     // NOTE: giữ nguyên cách bạn xử lý isAnonymous (mình không thay đổi)
+//     const isAnonymous = wantContact === false || 'false'; // giữ y nguyên theo yêu cầu
+
+//     const resultInsert = await pool
+//       .request()
+//       .input("suggestionCategorieId", sql.Int, suggestionCategorieId)
+//       .input("content", sql.NVarChar, content)
+//       .input("is_anonymous", sql.Bit, isAnonymous)
+//       .input("sender_name", sql.NVarChar, sender_name)
+//       .input("sender_department", sql.NVarChar, sender_department)
+//       .input("sender_phone", sql.NVarChar, sender_phone)
+//       .input("rating", sql.TinyInt, ratingVal) // <-- thêm param
+//       .query(`
+//         INSERT INTO Suggestions
+//           (suggestionCategorieId, content, is_anonymous, sender_name, sender_department, sender_phone, rating)
+//         OUTPUT INSERTED.suggestionId
+//         VALUES (@suggestionCategorieId, @content, @is_anonymous, @sender_name, @sender_department, @sender_phone, @rating)
+//       `);
+
+//     const suggestionId = resultInsert.recordset[0].suggestionId;
+
+//     // Lưu hình ảnh (giữ nguyên)
+//     const files = req.files || [];
+//     for (const file of files) {
+//       await pool
+//         .request()
+//         .input("suggestionId", sql.Int, suggestionId)
+//         .input("image_url", sql.NVarChar, file.path)
+//         .query(`
+//           INSERT INTO SuggestionImages (suggestionId, image_url)
+//           VALUES (@suggestionId, @image_url)
+//         `);
+//     }
+
+//     // Gửi email (giữ nguyên)
+//     const bgdEmails = [
+//       "hanhchaien@yahoo.com",
+//       "quangthongco@gmail.com",
+//     ];
+
+//     const otherEmails = [
+//       "lttnguyen328@gmail.com",
+//       "dinhhuutai20023107@gmail.com",
+//     ];
+
+//     const html = `
+//       <h3>📢 Có góp ý mới từ CNV</h3>
+//       <p><strong>Phòng ban:</strong> ${sender_department || "Ẩn danh"}</p>
+//       <p><strong>Người gửi:</strong> ${sender_name || "Ẩn danh"}</p>
+//       <p><strong>Số điện thoại:</strong> ${sender_phone || "Ẩn danh"}</p>
+//       <p><strong>Điểm đánh giá:</strong> ${ratingVal === null ? '—' : ratingVal + '/5'}</p>
+//       <p><strong>Nội dung góp ý:</strong></p>
+//       <p>${content}</p>
+//     `;
+
+//     const promises = [];
+
+//     // Gửi riêng BGĐ
+//     for (const email of bgdEmails) {
+//       promises.push(
+//         sendSuggestionEmail({
+//           to: email,
+//           subject: `📢 [BGĐ] Góp ý mới từ CNV - ${sender_department || "Không rõ"}`,
+//           html,
+//         })
+//       );
+//     }
+
+//     // Gửi chung nhóm còn lại
+//     if (otherEmails.length > 0) {
+//       promises.push(
+//         sendSuggestionEmail({
+//           to: otherEmails.join(","),
+//           subject: `📨 Góp ý mới từ CNV - ${sender_department || "Không rõ"}`,
+//           html,
+//         })
+//       );
+//     }
+
+//     // Gửi đồng thời
+//     await Promise.all(promises);
+
+
+//     res.json({ success: true, message: "Góp ý đã được lưu!" });
+//   } catch (err) {
+//     console.error("❌ Lỗi khi lưu góp ý:", err);
+//     res.status(500).json({ success: false, message: "Lỗi server" });
+//   }
+// });
+
 app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res) => {
   try {
     const pool = await poolPromise;
@@ -18,83 +136,250 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
       sender_name,
       sender_department,
       sender_phone,
-      rating // <--- new
+      rating
     } = req.body;
 
-    // parse rating: bắt buộc nếu client gửi phải là 1..5
+    // parse rating: nếu client gửi thì phải là 1..5
     let ratingVal = null;
-    if (rating !== undefined && rating !== null && String(rating).trim() !== '') {
+    if (rating !== undefined && rating !== null && String(rating).trim() !== "") {
       const r = Number(rating);
       if (!Number.isInteger(r) || r < 1 || r > 5) {
-        return res.status(400).json({ success: false, message: 'rating phải là số nguyên 1..5' });
+        return res.status(400).json({
+          success: false,
+          message: "rating phải là số nguyên 1..5",
+        });
       }
       ratingVal = r;
     } else {
-      // Nếu bạn muốn bắt buộc luôn phải có rating, uncomment dòng dưới:
-      // return res.status(400).json({ success:false, message: 'rating bị thiếu (1..5)' });
-      // Hiện để cho phép không gửi rating -> lưu NULL
       ratingVal = null;
     }
 
-    // NOTE: giữ nguyên cách bạn xử lý isAnonymous (mình không thay đổi)
-    const isAnonymous = wantContact === false || 'false'; // giữ y nguyên theo yêu cầu
+    // giữ nguyên theo yêu cầu của anh
+    const isAnonymous = wantContact === false || "false";
 
+    // 1) Lấy thông tin chủ đề
+    const cateRs = await pool
+      .request()
+      .input("suggestionCategorieId", sql.Int, suggestionCategorieId)
+      .query(`
+        SELECT TOP 1 suggestionCategorieId, name, icon
+        FROM SuggestionCategories
+        WHERE suggestionCategorieId = @suggestionCategorieId
+      `);
+
+    const category = cateRs.recordset[0] || null;
+    const categoryName = category?.name || "Không rõ chủ đề";
+    const categoryIcon = category?.icon || "📌";
+
+    // 2) Lưu góp ý
     const resultInsert = await pool
       .request()
       .input("suggestionCategorieId", sql.Int, suggestionCategorieId)
-      .input("content", sql.NVarChar, content)
+      .input("content", sql.NVarChar(sql.MAX), content)
       .input("is_anonymous", sql.Bit, isAnonymous)
-      .input("sender_name", sql.NVarChar, sender_name)
-      .input("sender_department", sql.NVarChar, sender_department)
-      .input("sender_phone", sql.NVarChar, sender_phone)
-      .input("rating", sql.TinyInt, ratingVal) // <-- thêm param
+      .input("sender_name", sql.NVarChar(255), sender_name || null)
+      .input("sender_department", sql.NVarChar(255), sender_department || null)
+      .input("sender_phone", sql.NVarChar(50), sender_phone || null)
+      .input("rating", sql.TinyInt, ratingVal)
       .query(`
         INSERT INTO Suggestions
           (suggestionCategorieId, content, is_anonymous, sender_name, sender_department, sender_phone, rating)
         OUTPUT INSERTED.suggestionId
-        VALUES (@suggestionCategorieId, @content, @is_anonymous, @sender_name, @sender_department, @sender_phone, @rating)
+        VALUES
+          (@suggestionCategorieId, @content, @is_anonymous, @sender_name, @sender_department, @sender_phone, @rating)
       `);
 
     const suggestionId = resultInsert.recordset[0].suggestionId;
 
-    // Lưu hình ảnh (giữ nguyên)
+    // Helper: chuyển path lưu DB sang URL public để email xem được
+    const buildPublicImageUrl = (rawPath) => {
+      if (!rawPath) return "";
+
+      // Nếu đã là URL đầy đủ thì giữ nguyên
+      if (/^https?:\/\//i.test(rawPath)) return rawPath;
+
+      // Ví dụ: file.path = uploads/suggestions/abc.jpg
+      // hoặc /uploads/suggestions/abc.jpg
+      const baseUrl = process.env.PUBLIC_BASE_URL || "http://localhost:3000";
+      const normalizedPath = String(rawPath).replace(/\\/g, "/");
+      const pathWithSlash = normalizedPath.startsWith("/")
+        ? normalizedPath
+        : `/${normalizedPath}`;
+
+      return `${baseUrl}${pathWithSlash}`;
+    };
+
+    // 3) Lưu hình ảnh nếu có
     const files = req.files || [];
+    const imageUrls = [];
+
     for (const file of files) {
+      const savedPath = file.path; // giữ nguyên như hệ thống anh đang lưu
       await pool
         .request()
         .input("suggestionId", sql.Int, suggestionId)
-        .input("image_url", sql.NVarChar, file.path)
+        .input("image_url", sql.NVarChar(1000), savedPath)
         .query(`
           INSERT INTO SuggestionImages (suggestionId, image_url)
           VALUES (@suggestionId, @image_url)
         `);
+
+      imageUrls.push(buildPublicImageUrl(savedPath));
     }
 
-    // Gửi email (giữ nguyên)
-    const recipients = [
-      "hanhchaien@yahoo.com",
-      "paul@thuanhung.group",
+
+    const html = `
+<div style="font-family:Segoe UI, Arial; background:#f4f6f8; padding:20px;">
+  <div style="width:100%; margin:auto; background:#fff; border-radius:12px; overflow:hidden; border:1px solid #e5e7eb;">
+
+    <!-- HEADER -->
+    <div style="background:#2563eb; color:#fff; padding:14px 18px;">
+      <div style="font-size:16px; font-weight:600;">
+        THLA - Hệ thống góp ý nội bộ
+      </div>
+      <div style="font-size:13px; opacity:0.9;">
+        Thông báo từ hệ thống
+      </div>
+    </div>
+
+    <!-- BODY -->
+    <div style="padding:18px; font-size:14px; color:#222;">
+
+      <!-- INFO -->
+      <div style="margin-bottom:14px;">
+        <div><strong>Chủ đề:</strong> ${categoryName}</div>
+        <div><strong>Phòng ban:</strong> ${sender_department || "Ẩn danh"}</div>
+        <div><strong>Người gửi:</strong> ${sender_name || "Ẩn danh"}</div>
+        <div><strong>Điện thoại:</strong> ${sender_phone || "Ẩn danh"}</div>
+      </div>
+
+      <!-- CONTENT -->
+      <div style="margin-top:10px;">
+        <div style="font-weight:600; margin-bottom:6px;">Nội dung góp ý</div>
+        <div style="
+          background:#f9fafb;
+          border-left:4px solid #3b82f6;
+          padding: 6px 10px;
+          border-radius:6px;
+          line-height:1.6;
+        ">
+          ${content || ""}
+        </div>
+      </div>
+
+      <!-- IMAGES -->
+      ${
+        imageUrls.length > 0
+          ? `
+        <div style="margin-top:16px;">
+          <div style="font-weight:600; margin-bottom:10px;">📷 Hình ảnh</div>
+
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+            ${imageUrls
+              .reduce((rows, url, index) => {
+                if (index % 2 === 0) rows.push([]);
+                rows[rows.length - 1].push({ url, index });
+                return rows;
+              }, [])
+              .map(
+                (row) => `
+                  <tr>
+                    ${row
+                      .map(
+                        ({ url, index }) => `
+                          <td style="padding:0 10px 12px 0; width:50%; vertical-align:top;">
+                            <a href="${url}" target="_blank">
+                              <img
+                                src="${url}"
+                                alt="Ảnh ${index + 1}"
+                                width="100%"
+                                style="
+                                  max-width:260px;
+                                  height:auto;
+                                  border-radius:8px;
+                                  border:1px solid #ddd;
+                                  display:block;
+                                "
+                              />
+                            </a>
+                            <div style="font-size:12px; color:#666; margin-top:4px;">
+                              Ảnh ${index + 1}
+                            </div>
+                          </td>
+                        `
+                      )
+                      .join("")}
+                    ${row.length === 1 ? `<td style="width:50%;"></td>` : ""}
+                  </tr>
+                `
+              )
+              .join("")}
+          </table>
+        </div>
+      `
+          : ""
+      }
+
+    </div>
+
+    <!-- FOOTER -->
+    <div style="background:#f9fafb; padding:12px 18px; font-size:12px; color:#666; line-height:1.6;">
+    <div>Mã góp ý: <strong>#${suggestionId}</strong></div>
+    <div>Hòm thư góp ý nội bộ THLA</div>
+    <div style="margin-top:4px; color:#999;">
+      Email này được gửi tự động
+    </div>
+  </div>
+
+  </div>
+</div>
+`;
+
+    const bgdEmails = [
+      //"hanhchaien@yahoo.com",
+      //"quangthongco@gmail.com",
+    ];
+
+    const otherEmails = [
       "lttnguyen328@gmail.com",
       "dinhhuutai20023107@gmail.com",
     ];
 
-    const html = `
-      <h3>📢 Có góp ý mới từ CNV</h3>
-      <p><strong>Phòng ban:</strong> ${sender_department || "Ẩn danh"}</p>
-      <p><strong>Người gửi:</strong> ${sender_name || "Ẩn danh"}</p>
-      <p><strong>Số điện thoại:</strong> ${sender_phone || "Ẩn danh"}</p>
-      <p><strong>Điểm đánh giá:</strong> ${ratingVal === null ? '—' : ratingVal + '/5'}</p>
-      <p><strong>Nội dung góp ý:</strong></p>
-      <p>${content}</p>
-    `;
+    const promises = [];
 
-    await sendSuggestionEmail({
-      to: recipients.join(","),
-      subject: `📨 Góp ý mới từ CNV - ${sender_department || "Không rõ"}`,
-      html,
+    // Gửi riêng BGĐ
+    for (const email of bgdEmails) {
+      promises.push(
+        sendSuggestionEmail({
+          to: email,
+          subject: `[BGĐ] Góp ý từ CNV Thuận Hưng Long An - [${categoryName}]`,
+          html,
+        })
+      );
+    }
+
+    // Gửi chung nhóm còn lại
+    if (otherEmails.length > 0) {
+      promises.push(
+        sendSuggestionEmail({
+          to: otherEmails.join(","),
+          subject: `Góp ý từ CNV Thuận Hưng Long An - [${categoryName}]`,
+          html,
+        })
+      );
+    }
+
+    await Promise.all(promises);
+
+    res.json({
+      success: true,
+      message: "Góp ý đã được lưu!",
+      data: {
+        suggestionId,
+        categoryName,
+        imageCount: imageUrls.length,
+      },
     });
-
-    res.json({ success: true, message: "Góp ý đã được lưu!" });
   } catch (err) {
     console.error("❌ Lỗi khi lưu góp ý:", err);
     res.status(500).json({ success: false, message: "Lỗi server" });
