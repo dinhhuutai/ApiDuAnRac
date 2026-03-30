@@ -5,6 +5,21 @@ const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const { sendSuggestionEmail } = require("../utils/mailer");
 
+/** Giữ xuống dòng / khoảng trắng khi đưa vào HTML email; chống XSS */
+function escapeHtmlForEmail(s) {
+  if (s == null || s === "") return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function normalizeSuggestionContent(content) {
+  if (content == null || content === undefined) return "";
+  const raw = typeof content === "string" ? content : String(content);
+  return raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
 
 function apiSuggestion(app) {
 
@@ -139,6 +154,8 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
       rating
     } = req.body;
 
+    const contentText = normalizeSuggestionContent(content);
+
     // parse rating: nếu client gửi thì phải là 1..5
     let ratingVal = null;
     if (rating !== undefined && rating !== null && String(rating).trim() !== "") {
@@ -175,7 +192,7 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
     const resultInsert = await pool
       .request()
       .input("suggestionCategorieId", sql.Int, suggestionCategorieId)
-      .input("content", sql.NVarChar(sql.MAX), content)
+      .input("content", sql.NVarChar(sql.MAX), contentText)
       .input("is_anonymous", sql.Bit, isAnonymous)
       .input("sender_name", sql.NVarChar(255), sender_name || null)
       .input("sender_department", sql.NVarChar(255), sender_department || null)
@@ -262,8 +279,10 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
           padding: 6px 10px;
           border-radius:6px;
           line-height:1.6;
+          white-space:pre-wrap;
+          word-wrap:break-word;
         ">
-          ${content || ""}
+          ${escapeHtmlForEmail(contentText)}
         </div>
       </div>
 
@@ -336,8 +355,8 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
 `;
 
     const bgdEmails = [
-      "hanhchaien@yahoo.com",
-      "quangthongco@gmail.com",
+      //"hanhchaien@yahoo.com",
+      //"quangthongco@gmail.com",
     ];
 
     const otherEmails = [
