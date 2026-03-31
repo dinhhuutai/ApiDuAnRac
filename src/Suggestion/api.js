@@ -406,17 +406,6 @@ app.post("/api/suggestions/submit", upload.array("images", 10), async (req, res)
 });
 
 
-app.get("/api/suggestions/categories", async (req, res) => {
-  try {
-    const pool = await poolPromise;
-    const result = await pool.request().query("SELECT * FROM SuggestionCategories");
-    res.json({ success: true, data: result.recordset });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: "Lỗi khi lấy danh mục góp ý" });
-  }
-});
-
 // GET /api/suggestions/categories
 app.get("/api/suggestions/categories", async (req, res) => {
   try {
@@ -430,6 +419,51 @@ app.get("/api/suggestions/categories", async (req, res) => {
   } catch (err) {
     console.error("Lỗi lấy danh mục góp ý:", err);
     res.status(500).json({ success: false, message: "Không thể tải danh mục" });
+  }
+});
+
+app.get("/api/suggestions/statuses", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT statusId, statusName
+      FROM SuggestionStatuses
+      ORDER BY statusId
+    `);
+    res.json({ success: true, data: result.recordset });
+  } catch (err) {
+    console.error("Lỗi lấy trạng thái góp ý:", err);
+    res.status(500).json({ success: false, message: "Không thể tải trạng thái" });
+  }
+});
+
+app.patch("/api/suggestions/:id", async (req, res) => {
+  const { id } = req.params;
+  const { statusId, processing_detail } = req.body;
+  if (statusId === undefined || statusId === null) {
+    return res.status(400).json({ success: false, message: "Thiếu statusId" });
+  }
+  try {
+    const pool = await poolPromise;
+    const detail =
+      processing_detail === undefined || processing_detail === null
+        ? null
+        : String(processing_detail);
+    await pool
+      .request()
+      .input("id", sql.Int, Number(id))
+      .input("statusId", sql.Int, Number(statusId))
+      .input("processing_detail", sql.NVarChar(sql.MAX), detail)
+      .query(`
+        UPDATE Suggestions
+        SET statusId = @statusId,
+            processing_detail = @processing_detail
+        WHERE suggestionId = @id
+      `);
+    res.json({ success: true, message: "Đã cập nhật" });
+  } catch (err) {
+    console.error("Lỗi cập nhật góp ý:", err);
+    res.status(500).json({ success: false, message: "Lỗi máy chủ" });
   }
 });
 
@@ -469,43 +503,98 @@ app.get("/api/suggestions/categories", async (req, res) => {
 app.get("/api/suggestions", async (req, res) => {
   try {
     const pool = await poolPromise;
-    const { fromDate, toDate, categoryId } = req.query;
+    const { fromDate, toDate, categoryId, statusId, page, pageSize, exportAll } = req.query;
 
-    let query = `
-      SELECT s.*, c.name AS categoryName
-      FROM Suggestions s
-      JOIN SuggestionCategories c 
-        ON s.suggestionCategorieId = c.suggestionCategorieId
-      WHERE 1 = 1
-    `;
+    const exportAllFlag =
+      exportAll === "true" || exportAll === "1" || exportAll === "yes";
+
+    let whereSql = `WHERE 1 = 1`;
 
     if (fromDate && toDate) {
-      query += `
-        AND CONVERT(DATE, s.created_at) 
+      whereSql += `
+        AND CONVERT(DATE, s.created_at)
         BETWEEN @fromDate AND @toDate
       `;
     }
 
     if (categoryId) {
-      query += ` AND s.suggestionCategorieId = @categoryId`;
+      whereSql += ` AND s.suggestionCategorieId = @categoryId`;
     }
 
-    query += ` ORDER BY s.created_at DESC`;
-
-    const request = pool.request();
-
-    if (fromDate && toDate) {
-      request.input("fromDate", sql.Date, fromDate);
-      request.input("toDate", sql.Date, toDate);
+    if (statusId) {
+      whereSql += ` AND s.statusId = @filterStatusId`;
     }
 
-    if (categoryId) {
-      request.input("categoryId", sql.Int, categoryId);
+    const baseSelect = `
+      SELECT s.*, c.name AS categoryName, ss.statusName
+      FROM Suggestions s
+      JOIN SuggestionCategories c
+        ON s.suggestionCategorieId = c.suggestionCategorieId
+      LEFT JOIN SuggestionStatuses ss ON s.statusId = ss.statusId
+      ${whereSql}
+    `;
+
+    const bindCommon = (request) => {
+      if (fromDate && toDate) {
+        request.input("fromDate", sql.Date, fromDate);
+        request.input("toDate", sql.Date, toDate);
+      }
+      if (categoryId) {
+        request.input("categoryId", sql.Int, Number(categoryId));
+      }
+      if (statusId) {
+        request.input("filterStatusId", sql.Int, Number(statusId));
+      }
+    };
+
+    if (exportAllFlag) {
+      const request = pool.request();
+      bindCommon(request);
+      const result = await request.query(`${baseSelect} ORDER BY s.created_at DESC`);
+      return res.json({
+        success: true,
+        data: result.recordset,
+        total: result.recordset.length,
+        page: 1,
+        pageSize: result.recordset.length,
+      });
     }
 
-    const result = await request.query(query);
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const sizeRaw = parseInt(pageSize, 10);
+    const allowed = [2, 5, 10, 20, 50, 100];
+    const size = allowed.includes(sizeRaw) ? sizeRaw : 10;
+    const offset = (pageNum - 1) * size;
 
-    res.json({ success: true, data: result.recordset });
+    const countReq = pool.request();
+    bindCommon(countReq);
+    const countResult = await countReq.query(`
+      SELECT COUNT(*) AS total
+      FROM Suggestions s
+      JOIN SuggestionCategories c
+        ON s.suggestionCategorieId = c.suggestionCategorieId
+      ${whereSql}
+    `);
+    const total = countResult.recordset[0].total;
+
+    const dataReq = pool.request();
+    bindCommon(dataReq);
+    dataReq.input("offset", sql.Int, offset);
+    dataReq.input("fetchSize", sql.Int, size);
+
+    const result = await dataReq.query(`
+      ${baseSelect}
+      ORDER BY s.created_at DESC
+      OFFSET @offset ROWS FETCH NEXT @fetchSize ROWS ONLY
+    `);
+
+    res.json({
+      success: true,
+      data: result.recordset,
+      total,
+      page: pageNum,
+      pageSize: size,
+    });
   } catch (err) {
     console.error("Lỗi lấy góp ý:", err);
     res.status(500).json({ success: false, message: "Server error" });
