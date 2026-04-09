@@ -1511,28 +1511,91 @@ const mapUser = (r) => ({
   avatar: r.avatar,
 });
 
+/** Chuỗi tìm kiếm: thường + bỏ dấu (liêu / liễu / LIÊU → cùng dạng so khớp) */
+function jsVnFold(s) {
+  if (!s) return '';
+  return s
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/\u0111/g, 'd')
+    .replace(/\u0110/g, 'd')
+    .toLowerCase()
+    .trim();
+}
+
+function escapeSqlLikePattern(s) {
+  return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+/** SQL: cột NVARCHAR → chữ thường, bỏ dấu tiếng Việt (đồng bộ với jsVnFold) */
+function sqlVnAsciiExpr(columnExpr) {
+  const pairs = [
+    ['á', 'a'], ['à', 'a'], ['ả', 'a'], ['ã', 'a'], ['ạ', 'a'],
+    ['â', 'a'], ['ấ', 'a'], ['ầ', 'a'], ['ẩ', 'a'], ['ẫ', 'a'], ['ậ', 'a'],
+    ['ă', 'a'], ['ắ', 'a'], ['ằ', 'a'], ['ẳ', 'a'], ['ẵ', 'a'], ['ặ', 'a'],
+    ['é', 'e'], ['è', 'e'], ['ẻ', 'e'], ['ẽ', 'e'], ['ẹ', 'e'],
+    ['ê', 'e'], ['ế', 'e'], ['ề', 'e'], ['ể', 'e'], ['ễ', 'e'], ['ệ', 'e'],
+    ['í', 'i'], ['ì', 'i'], ['ỉ', 'i'], ['ĩ', 'i'], ['ị', 'i'],
+    ['ó', 'o'], ['ò', 'o'], ['ỏ', 'o'], ['õ', 'o'], ['ọ', 'o'],
+    ['ô', 'o'], ['ố', 'o'], ['ồ', 'o'], ['ổ', 'o'], ['ỗ', 'o'], ['ộ', 'o'],
+    ['ơ', 'o'], ['ớ', 'o'], ['ờ', 'o'], ['ở', 'o'], ['ỡ', 'o'], ['ợ', 'o'],
+    ['ú', 'u'], ['ù', 'u'], ['ủ', 'u'], ['ũ', 'u'], ['ụ', 'u'],
+    ['ư', 'u'], ['ứ', 'u'], ['ừ', 'u'], ['ử', 'u'], ['ữ', 'u'], ['ự', 'u'],
+    ['ý', 'y'], ['ỳ', 'y'], ['ỷ', 'y'], ['ỹ', 'y'], ['ỵ', 'y'],
+    ['đ', 'd'],
+  ];
+  let inner = `LOWER(ISNULL(${columnExpr}, N''))`;
+  for (const [from, to] of pairs) {
+    inner = `REPLACE(${inner}, N'${from}', N'${to}')`;
+  }
+  return inner;
+}
+
+const USERS_SEARCH_FOLD_WHERE = `
+  (
+    @hasSearch = 0
+    OR ${sqlVnAsciiExpr('u.username')} LIKE @qFold ESCAPE CHAR(92)
+    OR ${sqlVnAsciiExpr('u.fullName')} LIKE @qFold ESCAPE CHAR(92)
+    OR ${sqlVnAsciiExpr('u.email')} LIKE @qFold ESCAPE CHAR(92)
+    OR ${sqlVnAsciiExpr('u.phone')} LIKE @qFold ESCAPE CHAR(92)
+    OR ${sqlVnAsciiExpr('u.msnv')} LIKE @qFold ESCAPE CHAR(92)
+  )`;
+
+const MODULE_USERS_SEARCH_FOLD = `
+  AND (
+    @hasSearch = 0
+    OR ${sqlVnAsciiExpr('u.fullName')} LIKE @qFold ESCAPE CHAR(92)
+    OR ${sqlVnAsciiExpr('u.username')} LIKE @qFold ESCAPE CHAR(92)
+    OR ${sqlVnAsciiExpr('u.msnv')} LIKE @qFold ESCAPE CHAR(92)
+  )`;
+
 // GET /api/users?q=&page=&pageSize=&includeModules=1
+// Tìm theo tên/MSNV/username/email/SĐT: không phân biệt hoa thường & dấu (gõ liêu / liễu đều ra)
 app.get('/api/users', async (req, res) => {
-  const { q = '', page = 1, pageSize = 20, includeModules } = req.query;
+  const { q: qRaw = '', page = 1, pageSize = 20, includeModules } = req.query;
   const _page = Math.max(1, parseInt(page, 10) || 1);
   const _size = Math.max(1, Math.min(200, parseInt(pageSize, 10) || 20));
   const offset = (_page - 1) * _size;
-  const qLike = `%${q}%`;
+  const q = String(qRaw).trim();
+  const hasSearch = q === '' ? 0 : 1;
+  const qFold = hasSearch ? `%${escapeSqlLikePattern(jsVnFold(q))}%` : '%';
 
   try {
     const pool = await poolPromise;
 
     const rCount = await pool.request()
-      .input('q', sql.NVarChar, qLike)
+      .input('hasSearch', sql.Bit, hasSearch)
+      .input('qFold', sql.NVarChar, qFold)
       .query(`
         SELECT COUNT(*) AS total
         FROM dbo.Users u
-        WHERE (@q='%%' OR u.username LIKE @q OR u.fullName LIKE @q OR u.email LIKE @q OR u.phone LIKE @q)
+        WHERE ${USERS_SEARCH_FOLD_WHERE}
       `);
     const total = rCount.recordset[0]?.total || 0;
 
     const rData = await pool.request()
-      .input('q', sql.NVarChar, qLike)
+      .input('hasSearch', sql.Bit, hasSearch)
+      .input('qFold', sql.NVarChar, qFold)
       .input('size', sql.Int, _size)
       .input('offset', sql.Int, offset)
       .query(`
@@ -1540,7 +1603,7 @@ app.get('/api/users', async (req, res) => {
           u.userID, u.username, u.fullName, u.email, u.phone,
           u.role, u.isActive, u.lastLogin, u.createdAt, u.avatar
         FROM dbo.Users u
-        WHERE (@q='%%' OR u.username LIKE @q OR u.fullName LIKE @q OR u.email LIKE @q OR u.phone LIKE @q)
+        WHERE ${USERS_SEARCH_FOLD_WHERE}
         ORDER BY u.userID DESC
         OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
       `);
@@ -3474,7 +3537,143 @@ app.get('/api/modules', async (req, res) => {
   }
 });
 
+// GET /api/modules/:moduleId/users?assigned=1|0&page=&pageSize=&includeUser=1&includeAdmin=1&q=
+// q: tìm theo tên/username/msnv — không phân biệt hoa thường & dấu (Vietnamese_CI_AI)
+// assigned=1: user đã được gán module; assigned=0: user chưa có module này
+// includeUser/includeAdmin (chỉ khi assigned=1): lọc theo um.role; mặc định cả hai = 1
+app.get('/api/modules/:moduleId/users', async (req, res) => {
+  const moduleId = Number(req.params.moduleId);
+  if (!moduleId) {
+    return res.status(400).json({ success: false, message: 'Invalid moduleId' });
+  }
+  const assignedRaw = String(req.query.assigned ?? '1').toLowerCase();
+  const hasModule = assignedRaw === '1' || assignedRaw === 'true' || assignedRaw === 'yes';
+  const _page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const _size = Math.max(1, Math.min(100, parseInt(req.query.pageSize, 10) || 10));
+  const offset = (_page - 1) * _size;
 
+  const qTrim = String(req.query.q ?? '').trim();
+  const hasSearch = qTrim === '' ? 0 : 1;
+  const qFold = hasSearch ? `%${escapeSqlLikePattern(jsVnFold(qTrim))}%` : '%';
+
+  const parseInc = (v, def) => {
+    if (v === undefined || v === '') return def;
+    const n = parseInt(String(v), 10);
+    return n === 1;
+  };
+  const wantUser = parseInc(req.query.includeUser, true);
+  const wantAdmin = parseInc(req.query.includeAdmin, true);
+
+  try {
+    const pool = await poolPromise;
+
+    const rMod = await pool.request()
+      .input('moduleId', sql.Int, moduleId)
+      .query(`SELECT TOP 1 moduleId FROM dbo.Modules WHERE moduleId = @moduleId`);
+    if (!rMod.recordset.length) {
+      return res.status(404).json({ success: false, message: 'Module not found' });
+    }
+
+    if (hasModule) {
+      const roleFilterSql = `
+        AND (
+          (@wantUser = 1 AND um.role = N'user')
+          OR (@wantAdmin = 1 AND um.role = N'admin')
+        )`;
+
+      const rCount = await pool.request()
+        .input('moduleId', sql.Int, moduleId)
+        .input('wantUser', sql.Bit, wantUser ? 1 : 0)
+        .input('wantAdmin', sql.Bit, wantAdmin ? 1 : 0)
+        .input('hasSearch', sql.Bit, hasSearch)
+        .input('qFold', sql.NVarChar, qFold)
+        .query(`
+          SELECT COUNT(*) AS total
+          FROM dbo.UserModules um
+          INNER JOIN dbo.Users u ON u.userID = um.userId
+          WHERE um.moduleId = @moduleId
+            AND u.isActive = 1
+            AND ISNULL(u.isDeleted, 0) = 0
+            ${roleFilterSql}
+            ${MODULE_USERS_SEARCH_FOLD}
+        `);
+      const total = rCount.recordset[0]?.total || 0;
+
+      const rData = await pool.request()
+        .input('moduleId', sql.Int, moduleId)
+        .input('wantUser', sql.Bit, wantUser ? 1 : 0)
+        .input('wantAdmin', sql.Bit, wantAdmin ? 1 : 0)
+        .input('hasSearch', sql.Bit, hasSearch)
+        .input('qFold', sql.NVarChar, qFold)
+        .input('offset', sql.Int, offset)
+        .input('size', sql.Int, _size)
+        .query(`
+          SELECT u.userID, u.fullName, u.username, u.avatar, u.msnv, um.role AS moduleRole
+          FROM dbo.UserModules um
+          INNER JOIN dbo.Users u ON u.userID = um.userId
+          WHERE um.moduleId = @moduleId
+            AND u.isActive = 1
+            AND ISNULL(u.isDeleted, 0) = 0
+            ${roleFilterSql}
+            ${MODULE_USERS_SEARCH_FOLD}
+          ORDER BY u.fullName ASC, u.userID ASC
+          OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
+        `);
+
+      return res.json({
+        success: true,
+        data: rData.recordset,
+        pagination: { page: _page, pageSize: _size, total },
+      });
+    }
+
+    const rCount = await pool.request()
+      .input('moduleId', sql.Int, moduleId)
+      .input('hasSearch', sql.Bit, hasSearch)
+      .input('qFold', sql.NVarChar, qFold)
+      .query(`
+        SELECT COUNT(*) AS total
+        FROM dbo.Users u
+        WHERE u.isActive = 1
+          AND ISNULL(u.isDeleted, 0) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM dbo.UserModules um
+            WHERE um.userId = u.userID AND um.moduleId = @moduleId
+          )
+          ${MODULE_USERS_SEARCH_FOLD}
+      `);
+    const total = rCount.recordset[0]?.total || 0;
+
+    const rData = await pool.request()
+      .input('moduleId', sql.Int, moduleId)
+      .input('hasSearch', sql.Bit, hasSearch)
+      .input('qFold', sql.NVarChar, qFold)
+      .input('offset', sql.Int, offset)
+      .input('size', sql.Int, _size)
+      .query(`
+        SELECT u.userID, u.fullName, u.username, u.avatar, u.msnv
+        FROM dbo.Users u
+        WHERE u.isActive = 1
+          AND ISNULL(u.isDeleted, 0) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM dbo.UserModules um
+            WHERE um.userId = u.userID AND um.moduleId = @moduleId
+          )
+          ${MODULE_USERS_SEARCH_FOLD}
+        ORDER BY u.fullName ASC, u.userID ASC
+        OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
+      `);
+
+    return res.json({
+      success: true,
+      data: rData.recordset,
+      pagination: { page: _page, pageSize: _size, total },
+    });
+  } catch (err) {
+    console.error('❌ GET /api/modules/:moduleId/users error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 
 app.put('/api/modules/:id/reset', async (req, res) => {
   const id = Number(req.params.id);
