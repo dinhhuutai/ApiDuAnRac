@@ -1655,7 +1655,7 @@ app.post('/api/users', async (req, res) => {
       .input('username', sql.NVarChar, username)
       .query(`SELECT TOP 1 userID FROM dbo.Users WHERE username=@username`);
     if (rU.recordset.length) {
-      return res.status(400).json({ success: false, message: 'Username đã tồn tại' });
+      return res.status(400).json({ success: false, message: 'Tài khoản đã tồn tại' });
     }
 
     // hash mật khẩu mặc định "1"
