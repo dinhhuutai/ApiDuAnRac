@@ -15,11 +15,11 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY
 );
 
-require('./jobs/lunchReminderJob');
+//require('./jobs/lunchReminderJob');
 
 // Bật cron
-require('./jobs/lunchToday11h25Job');
-require('./jobs/lunchFeedback1150Job');
+//require('./jobs/lunchToday11h25Job');
+//require('./jobs/lunchFeedback1150Job');
 
 //Tạo task lặp hằng ngày;
 require('./TaskManagement/cron/repeatDailyCron');

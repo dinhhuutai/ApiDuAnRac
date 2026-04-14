@@ -31,7 +31,7 @@ async function sendPushToUsers(payload, userIDs = null) {
   const body = JSON.stringify({
     title: payload.title || 'THLA',
     body: payload.body || '',
-    url: payload.url || 'https://noibo.thuanhunglongan.com/lunch-order/me',
+    url: payload.url || '/lunch-order/me',
     icon: payload.icon,   // có thể undefined -> SW dùng mặc định
     badge: payload.badge,
     tag: 'lunch-weekly-menu',  // gom/thay thế thông báo cũ

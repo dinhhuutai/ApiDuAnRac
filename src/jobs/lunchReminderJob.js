@@ -91,7 +91,7 @@ async function lunchReminderJob(label = '') {
     const payload = {
       title: 'Nhắc đặt cơm',
       body: 'Đã có thực đơn tuần mới. Vui lòng đặt cơm.',
-      url: 'https://noibo.thuanhunglongan.com/lunch-order/me',
+      url: '/lunch-order/me',
       ttl: 3600,
       tag: 'lunch-weekly-menu',
       renotify: false,

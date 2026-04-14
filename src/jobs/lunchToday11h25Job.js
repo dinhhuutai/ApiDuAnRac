@@ -155,7 +155,7 @@ async function runLunchTodayAt1125() {
       const payload = {
         title: 'Bữa trưa hôm nay',
         body: `Hôm nay bạn ăn: ${foodName}. Chúc ngon miệng!`,
-        url: 'https://noibo.thuanhunglongan.com/lunch-order/me',
+        url: '/lunch-order/me',
         tag: 'lunch-today',   // tránh nhân bản
         renotify: false
       };

@@ -2221,7 +2221,7 @@ app.post("/api/lunch-order/secretary/update-quantity", async (req, res) => {
         const payload = {
           title: "Cập nhật số lượng cơm",
           body,
-          url: `https://noibo.thuanhunglongan.com/lunch-order/admin?menuId=${weeklyMenuId}`,
+          url: `/lunch-order/admin?menuId=${weeklyMenuId}`,
           tag: "lunch-qty-update",
           renotify: false,
           ttl: 3600,
@@ -2499,7 +2499,7 @@ app.post("/api/lunch-order/day/secretary/save", async (req, res) => {
         await sendPushToUsers({
           title: "Đặt cơm theo ngày",
           body,
-          url: `https://noibo.thuanhunglongan.com/lunch-order/admin?date=${encodeURIComponent(date)}`,
+          url: `/lunch-order/admin?date=${encodeURIComponent(date)}`,
           tag: "lunch-day-secretary",
           ttl: 3600
         }, adminIDs);
@@ -3900,7 +3900,7 @@ app.post('/api/lunch-order/admin/remind-latest-unordered', /*authAdmin,*/ async 
     const payload = {
       title: 'Nhắc đặt cơm',
       body: 'Đã có thực đơn tuần mới. Vui lòng đặt cơm.',
-      url: 'https://noibo.thuanhunglongan.com/lunch-order/me',
+      url: '/lunch-order/me',
       ttl: 3600
     };
     const result = await sendPushToUsers(payload, unorderedUserIDs);

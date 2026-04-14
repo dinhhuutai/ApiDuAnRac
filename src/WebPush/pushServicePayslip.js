@@ -79,7 +79,7 @@ async function notifyPayslipPublished(periodTitle = 'Phiếu lương mới') {
   const payload = {
     title: `Đã có ${periodTitle}`,
     body: `${periodTitle}: Bấm để xem chi tiết phiếu lương của bạn.`,
-    url: 'https://noibo.thuanhunglongan.com/me/view-payslip', // đổi đúng route FE
+    url: '/me/view-payslip',
     tag: 'payroll-latest',
     renotify: false,
     ttl: 3600
