@@ -77,6 +77,8 @@ app.use(cors({
   credentials: true
 }));
 
+app.use('/api/public', require('./utilsMrTuy/proxyImageApi'));
+
 app.get('/', (req, res) => {
   res.status(200).send('API is running');
 });
