@@ -4086,7 +4086,7 @@ app.get('/api/trash-bins/details-by-selection', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('Lỗi details-by-selection:', err);
+    console.log('Lỗi details-by-selection:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
