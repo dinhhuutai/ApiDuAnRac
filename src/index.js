@@ -6,6 +6,19 @@ const { sql, poolPromise } = require("./db");
 const bcrypt = require("bcrypt");
 const { DateTime } = require('luxon');
 const uploadAvatar = require("./middleware/uploadAvatar");
+const axios = require('axios');
+
+const INTERNAL_API = process.env.API_WEBAPP_NOI_BO;
+
+// Tạo axios instance dùng chung
+const internalApi = axios.create({
+  baseURL: INTERNAL_API,
+  timeout: 60000,
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Internal-Request': 'WEBAPP'
+  }
+});
 
 // VAPID (ví dụ)
 const webpush = require('web-push');
@@ -5727,6 +5740,203 @@ app.get('/api/trash/drill', async (req, res) => {
   } catch (err) {
     console.error('drill error:', err);
     return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/api/trash/report-trash-and-material', async (req, res) => {
+  try {
+    const { fromDate, toDate, bucketName = '' } = req.query;
+
+    if (!fromDate || !toDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Thiếu fromDate hoặc toDate',
+      });
+    }
+
+    const pool = await poolPromise;
+
+    const qData = `
+SET NOCOUNT ON;
+
+DECLARE @start date = @fromDate;
+DECLARE @end   date = @toDate;
+DECLARE @endOfDay datetime2 = DATEADD(ms, -3, DATEADD(day, 1, CAST(@end AS datetime2)));
+
+-- Bucket filter
+DECLARE @B TABLE (
+  bucketID     INT PRIMARY KEY,
+  bucketName   NVARCHAR(255),
+  departmentID INT
+);
+
+INSERT INTO @B(bucketID, bucketName, departmentID)
+SELECT bucketID, bucketName, departmentID
+FROM dbo.ReportBuckets
+WHERE isActive = 1
+  AND (@bucketName = N'' OR bucketName = @bucketName);
+
+-- TrashTypes cần lấy
+DECLARE @TYPES TABLE (trashTypeID INT PRIMARY KEY);
+INSERT INTO @TYPES(trashTypeID)
+SELECT trashTypeID
+FROM dbo.TrashTypes
+WHERE trashName IN (
+  N'Giẻ lau có chứa thành phần nguy hại',
+  N'Giẻ lau dính lapa',
+  N'Băng keo dính mực',
+  N'Keo bàn thải',
+  N'Mực in thải',
+  N'Mực in lapa thải',
+  N'Vụn logo',
+  N'Lụa căng khung',
+  N'Rác sinh hoạt'
+);
+
+-- Lọc dữ liệu cân
+IF OBJECT_ID('tempdb..#TW') IS NOT NULL DROP TABLE #TW;
+SELECT
+    tw.trashBinCode,
+    tw.workDate,
+    tw.weighingTime,
+    tw.workShift,
+    tw.weightKg
+INTO #TW
+FROM dbo.TrashWeighings tw
+WHERE
+      (tw.workDate IS NOT NULL AND tw.workDate BETWEEN @start AND @end)
+   OR (tw.workDate IS NULL AND tw.weighingTime >= @start AND tw.weighingTime <= @endOfDay);
+
+-- =============================
+-- GOM THEO BUCKET (BỘ PHẬN)
+-- =============================
+;WITH Agg AS (
+  SELECT
+      B.bucketID,
+      B.bucketName,
+      tt.trashTypeID,
+      tt.trashName,
+      tw.workShift,
+      SUM(tw.weightKg) AS total
+  FROM @B B
+  JOIN dbo.TrashBins tb  ON tb.departmentID = B.departmentID
+  JOIN #TW tw            ON tw.trashBinCode = tb.trashBinCode
+  JOIN dbo.TrashTypes tt ON tt.trashTypeID = tb.trashTypeID
+  JOIN @TYPES T          ON T.trashTypeID = tt.trashTypeID
+  GROUP BY B.bucketID, B.bucketName, tt.trashTypeID, tt.trashName, tw.workShift
+)
+
+SELECT
+  bucketID,
+  bucketName,
+
+  ${TRASH_NAMES.map(name => {
+    const base = name.replace(/\s+/g, '');
+    return SHIFTS.map(shift => {
+      const condShift = shift === null ? 'IS NULL' : `= N'${shift}'`;
+      return `
+      SUM(CASE WHEN trashName = N'${name}' AND workShift ${condShift} THEN total ELSE 0 END) AS [${base}_${shift || 'null'}]`;
+    }).join(',');
+  }).join(',')},
+
+  SUM(total) AS totalWeight
+
+FROM Agg
+GROUP BY bucketID, bucketName
+ORDER BY bucketID;
+
+SET NOCOUNT OFF;
+`;
+
+    const rs = await pool.request()
+      .input('fromDate', sql.Date, fromDate)
+      .input('toDate', sql.Date, toDate)
+      .input('bucketName', sql.NVarChar, bucketName)
+      .query(qData);
+
+    // ===== Pack về format giống API cũ (64 phần tử) =====
+    function pack64(row) {
+      const arr = [];
+      for (const trash of TRASH_NAMES) {
+        const base = trash.replace(/\s+/g, '');
+        for (const shift of SHIFTS) {
+          const alias = `${base}_${shift || 'null'}`;
+          arr.push(Math.round(((row?.[alias] || 0) + Number.EPSILON) * 100) / 100);
+        }
+      }
+      arr.push(Math.round(((row?.totalWeight || 0) + Number.EPSILON) * 100) / 100);
+      return arr;
+    }
+
+    const data = [];
+    const grand = Array(64).fill(0);
+
+    for (const r of rs.recordset || []) {
+      const values = pack64(r);
+
+      // cộng grand
+      for (let i = 0; i < 64; i++) {
+        grand[i] += values[i];
+      }
+
+      data.push({
+        bucketID: r.bucketID,
+        bucketName: r.bucketName,
+        value: values
+      });
+    }
+
+    return res.json({
+      success: true,
+      data,
+      grandTotal: grand
+    });
+
+  } catch (err) {
+    console.error('API report-trash-and-material error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi server',
+    });
+  }
+});
+
+app.get('/api/trash/material-from-main', requireAuth, async (req, res) => {
+  try {
+    const { fromDate, toDate } = req.query;
+
+    if (!fromDate || !toDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Thiếu fromDate hoặc toDate',
+      });
+    }
+
+    // ===== CALL SERVER CHÍNH =====
+    const response = await internalApi.get(
+      '/api/server/backup/trash/report-trash-and-material',
+      {
+        params: {
+          fromDate,
+          toDate,
+        },
+        headers: {
+          'X-User-Id': req.user?.userID || '',
+          'X-Username': req.user?.username || '',
+        },
+      }
+    );
+
+    // ===== TRẢ NGUYÊN DATA =====
+    return res.json(response.data);
+
+  } catch (err) {
+    console.error('Proxy material-from-main error:', err?.message);
+
+    return res.status(err.response?.status || 500).json({
+      success: false,
+      message: 'Không thể lấy dữ liệu từ server chính',
+    });
   }
 });
 
