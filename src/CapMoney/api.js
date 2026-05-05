@@ -129,6 +129,13 @@ router.get('/home-summary', requireAuth, async (req, res) => {
       selectedMonthStr = selectedDateStr.slice(0, 7);
     }
 
+    const [calYear, calMonth] = selectedMonthStr.split('-').map(Number);
+    const calendarStartStr = `${selectedMonthStr}-01`;
+    const calendarEndDate = new Date(calYear, calMonth, 0);
+    const calendarEndStr = `${calYear}-${String(calMonth).padStart(2, '0')}-${String(
+      calendarEndDate.getDate()
+    ).padStart(2, '0')}`;
+
     const accFilter = parseAccountId(accountId);
     const pool = await poolPromise;
 
@@ -265,6 +272,52 @@ router.get('/home-summary', requireAuth, async (req, res) => {
     const totalExpenseToday = Number(totalsSeed.todayTotalExpense || 0);
     const totalIncomeToday = Number(totalsSeed.todayTotalIncome || 0);
 
+    // day preview images (up to 2 images/day)
+    const rDayImages = await pool
+      .request()
+      .input('uid', sql.Int, uid)
+      .input('calendarStart', sql.Date, calendarStartStr)
+      .input('calendarEnd', sql.Date, calendarEndStr)
+      .input('accId', sql.Int, accFilter.type === 'id' ? accFilter.accountId : null)
+      .input('accType', sql.NVarChar(20), accFilter.type === 'type' ? accFilter.accountType : null)
+      .query(`
+        ;WITH tx_images AS (
+          SELECT
+            CONVERT(VARCHAR(10), CAST(t.transactionDate AS DATE), 23) AS [date],
+            ti.imageUrl,
+            ROW_NUMBER() OVER (
+              PARTITION BY CAST(t.transactionDate AS DATE)
+              ORDER BY t.transactionDate DESC, t.transactionId DESC, ti.displayOrder ASC, ti.transactionImageId ASC
+            ) AS rn
+          FROM dbo.cm_Transactions t
+          INNER JOIN dbo.cm_Accounts a
+            ON a.accountId = t.accountId
+           AND a.userId = @uid
+           AND ISNULL(a.isDelete, 0) = 0
+          INNER JOIN dbo.cm_TransactionImages ti
+            ON ti.transactionId = t.transactionId
+           AND ISNULL(ti.isDelete, 0) = 0
+          WHERE ISNULL(t.isDelete, 0) = 0
+            AND CAST(t.transactionDate AS DATE) BETWEEN @calendarStart AND @calendarEnd
+            AND (
+              @accId IS NULL AND (@accType IS NULL OR a.accountType = @accType)
+              OR
+              @accId IS NOT NULL AND t.accountId = @accId
+            )
+        )
+        SELECT [date], imageUrl, rn
+        FROM tx_images
+        WHERE rn <= 2
+        ORDER BY [date], rn;
+      `);
+
+    const dayImagesMap = new Map();
+    for (const row of rDayImages.recordset || []) {
+      if (!row?.date || !row?.imageUrl) continue;
+      if (!dayImagesMap.has(row.date)) dayImagesMap.set(row.date, []);
+      dayImagesMap.get(row.date).push(row.imageUrl);
+    }
+
     res.json({
       success: true,
       data: {
@@ -294,6 +347,7 @@ router.get('/home-summary', requireAuth, async (req, res) => {
           totalIncome: Number(d.totalIncome || 0),
           transactionCount: Number(d.transactionCount || 0),
           hasTransaction: Boolean(d.hasTransaction),
+          previewImages: dayImagesMap.get(d.date) || [],
         })),
       },
     });
@@ -455,6 +509,7 @@ router.post('/transactions', requireAuth, upload.any(), async (req, res) => {
     const location = locationText ?? null;
 
     const rInsTx = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
       .input('transactionTypeId', sql.Int, Number(typeResolved))
       .input('accountId', sql.Int, accId)
       .input('categoryId', sql.Int, catId)
@@ -466,11 +521,11 @@ router.post('/transactions', requireAuth, upload.any(), async (req, res) => {
       .query(`
         DECLARE @New TABLE (transactionId INT);
         INSERT INTO dbo.cm_Transactions
-          (transactionTypeId, accountId, categoryId, amount, transactionDate,
+          (userID, transactionTypeId, accountId, categoryId, amount, transactionDate,
            detailNote, locationText, createdBy, createdDate, isDelete)
         OUTPUT INSERTED.transactionId INTO @New(transactionId)
         VALUES
-          (@transactionTypeId, @accountId, @categoryId, @amount, @transactionDate,
+          (@uid, @transactionTypeId, @accountId, @categoryId, @amount, @transactionDate,
            @detailNote, @locationText, @createdBy, GETDATE(), 0);
         SELECT TOP 1 transactionId FROM @New;
       `);
@@ -490,7 +545,7 @@ router.post('/transactions', requireAuth, upload.any(), async (req, res) => {
       .query(`
         UPDATE dbo.cm_Accounts
         SET currentBalance = ISNULL(currentBalance, 0) + @delta,
-            updatedAt = SYSDATETIME(),
+            updatedDate = SYSDATETIME(),
             updatedBy = @uid
         WHERE accountId = @accountId
           AND userId = @uid
