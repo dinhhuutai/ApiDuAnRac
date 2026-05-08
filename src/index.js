@@ -69,6 +69,13 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(
   "/uploads",
+  (req, res, next) => {
+    // Allow cross-origin fetch of images so Web Share can attach files
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    next();
+  },
   express.static(UPLOAD_ROOT, {
     index: false,
     maxAge: "7d",

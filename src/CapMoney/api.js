@@ -380,6 +380,8 @@ router.get('/categories', requireAuth, async (req, res) => {
         SELECT
           categoryId,
           categoryName,
+          categoryIcon,
+          categoryColor,
           displayOrder,
           transactionTypeId
         FROM dbo.cm_Categories
@@ -631,18 +633,130 @@ router.get('/transactions/by-date/:date', requireAuth, async (req, res) => {
       .input('accId', sql.Int, accFilter.type === 'id' ? accFilter.accountId : null)
       .input('accType', sql.NVarChar(20), accFilter.type === 'type' ? accFilter.accountType : null)
       .query(`
+        ;WITH tx AS (
+          SELECT
+            t.transactionId,
+            t.transactionTypeId,
+            tt.transactionTypeCode AS transactionTypeCode,
+            t.accountId,
+            a.accountName,
+            t.categoryId,
+            c.categoryName,
+            t.amount,
+            t.transactionDate,
+            t.detailNote,
+            t.locationText
+          FROM dbo.cm_Transactions t
+          INNER JOIN dbo.cm_Accounts a
+            ON a.accountId = t.accountId
+           AND a.userId = @uid
+           AND ISNULL(a.isDelete, 0) = 0
+          LEFT JOIN dbo.cm_Categories c
+            ON c.categoryId = t.categoryId
+           AND ISNULL(c.isDelete, 0) = 0
+          LEFT JOIN dbo.cm_TransactionTypes tt
+            ON tt.transactionTypeId = t.transactionTypeId
+           AND ISNULL(tt.isActive, 1) = 1
+          WHERE ISNULL(t.isDelete, 0) = 0
+            AND t.userId = @uid
+            AND CAST(t.transactionDate AS DATE) = @date
+            AND (
+              @accId IS NULL AND (@accType IS NULL OR a.accountType = @accType)
+              OR
+              @accId IS NOT NULL AND t.accountId = @accId
+            )
+        )
+        SELECT
+          tx.*,
+          img.imageUrl,
+          totals.totalExpense,
+          totals.totalIncome
+        FROM tx
+        OUTER APPLY (
+          SELECT TOP 1 ti.imageUrl
+          FROM dbo.cm_TransactionImages ti
+          WHERE ti.transactionId = tx.transactionId
+            AND ISNULL(ti.isDelete, 0) = 0
+          ORDER BY ti.displayOrder ASC, ti.transactionImageId ASC
+        ) img
+        CROSS APPLY (
+          SELECT
+            totalExpense = COALESCE(SUM(CASE WHEN tx2.transactionTypeId = 1 THEN tx2.amount ELSE 0 END), 0),
+            totalIncome  = COALESCE(SUM(CASE WHEN tx2.transactionTypeId = 2 THEN tx2.amount ELSE 0 END), 0)
+          FROM tx tx2
+        ) totals
+        ORDER BY tx.transactionDate DESC, tx.transactionId DESC;
+      `);
+
+    const rows = r.recordset || [];
+    const seed = rows[0] || {};
+    res.json({
+      success: true,
+      data: {
+        date,
+        totalExpense: Number(seed.totalExpense || 0),
+        totalIncome: Number(seed.totalIncome || 0),
+        transactions: rows.map((x) => ({
+          transactionId: x.transactionId,
+          transactionTypeId: Number(x.transactionTypeId),
+          transactionTypeCode: x.transactionTypeCode,
+          accountId: x.accountId,
+          accountName: x.accountName,
+          categoryId: x.categoryId,
+          categoryName: x.categoryName,
+          amount: Number(x.amount || 0),
+          transactionDate: x.transactionDate,
+          detailNote: x.detailNote,
+          locationText: x.locationText,
+          imageUrl: x.imageUrl || null,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('capmoney transactions/by-date error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== GET: /transactions/by-month/:month ==================
+// month: YYYY-MM
+router.get('/transactions/by-month/:month', requireAuth, async (req, res) => {
+  try {
+    const uid = req.user.userID;
+    const month = req.params.month;
+    const { accountId } = req.query || {};
+
+    if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
+      return res.status(400).json({ success: false, message: 'month phải là YYYY-MM' });
+    }
+
+    const [y, m] = String(month).split('-').map(Number);
+    const startDate = `${String(month)}-01`;
+    const endDateObj = new Date(y, m, 0);
+    const endDate = `${y}-${String(m).padStart(2, '0')}-${String(endDateObj.getDate()).padStart(2, '0')}`;
+
+    const accFilter = parseAccountId(accountId);
+    const pool = await poolPromise;
+    const r = await pool
+      .request()
+      .input('uid', sql.Int, uid)
+      .input('startDate', sql.Date, startDate)
+      .input('endDate', sql.Date, endDate)
+      .input('accId', sql.Int, accFilter.type === 'id' ? accFilter.accountId : null)
+      .input('accType', sql.NVarChar(20), accFilter.type === 'type' ? accFilter.accountType : null)
+      .query(`
         SELECT
           t.transactionId,
           t.transactionTypeId,
-          tt.code AS transactionTypeCode,
+          t.amount,
+          t.transactionDate,
+          t.detailNote,
+          t.locationText,
           t.accountId,
           a.accountName,
           t.categoryId,
           c.categoryName,
-          t.amount,
-          t.transactionDate,
-          t.detailNote,
-          t.locationText
+          img.imageUrl
         FROM dbo.cm_Transactions t
         INNER JOIN dbo.cm_Accounts a
           ON a.accountId = t.accountId
@@ -651,22 +765,524 @@ router.get('/transactions/by-date/:date', requireAuth, async (req, res) => {
         LEFT JOIN dbo.cm_Categories c
           ON c.categoryId = t.categoryId
          AND ISNULL(c.isDelete, 0) = 0
-        LEFT JOIN dbo.cm_TransactionTypes tt
-          ON tt.transactionTypeId = t.transactionTypeId
-         AND ISNULL(tt.isDelete, 0) = 0
+        OUTER APPLY (
+          SELECT TOP 1 ti.imageUrl
+          FROM dbo.cm_TransactionImages ti
+          WHERE ti.transactionId = t.transactionId
+            AND ISNULL(ti.isDelete, 0) = 0
+          ORDER BY ti.displayOrder ASC, ti.transactionImageId ASC
+        ) img
         WHERE ISNULL(t.isDelete, 0) = 0
-          AND CAST(t.transactionDate AS DATE) = @date
+          AND t.userId = @uid
+          AND CAST(t.transactionDate AS DATE) BETWEEN @startDate AND @endDate
+          AND img.imageUrl IS NOT NULL
           AND (
             @accId IS NULL AND (@accType IS NULL OR a.accountType = @accType)
             OR
             @accId IS NOT NULL AND t.accountId = @accId
           )
-        ORDER BY t.transactionDate DESC, t.transactionId DESC;
+        ORDER BY t.transactionDate ASC, t.transactionId ASC;
       `);
 
     res.json({ success: true, data: r.recordset || [] });
   } catch (err) {
-    console.error('capmoney transactions/by-date error:', err);
+    console.error('capmoney transactions/by-month error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== DELETE: /transactions/:transactionId ==================
+// Soft delete transaction + revert account balance + soft delete images
+router.delete('/transactions/:transactionId', requireAuth, async (req, res) => {
+  let tx;
+  try {
+    const uid = req.user.userID;
+    const transactionId = Number(req.params.transactionId);
+    if (!Number.isFinite(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ success: false, message: 'transactionId không hợp lệ' });
+    }
+
+    const pool = await poolPromise;
+    tx = new sql.Transaction(pool);
+    await tx.begin();
+
+    // Load transaction (owned by user)
+    const rTx = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        SELECT TOP 1
+          t.transactionId,
+          t.userId,
+          t.transactionTypeId,
+          t.accountId,
+          t.amount,
+          ISNULL(t.isDelete, 0) AS isDelete
+        FROM dbo.cm_Transactions t
+        WHERE t.transactionId = @transactionId
+          AND t.userId = @uid
+      `);
+
+    const row = rTx.recordset?.[0];
+    if (!row) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Giao dịch không tồn tại' });
+    }
+    if (Number(row.isDelete) === 1) {
+      await tx.rollback();
+      return res.json({ success: true, message: 'Giao dịch đã được xóa trước đó' });
+    }
+
+    const accId = Number(row.accountId);
+    const amountNum = Number(row.amount || 0);
+    const typeId = Number(row.transactionTypeId);
+
+    // Revert balance: expense had -amount, so revert is +amount; income had +amount, revert is -amount
+    const revert = typeId === 1 ? amountNum : typeId === 2 ? -amountNum : 0;
+
+    await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        UPDATE dbo.cm_Transactions
+        SET isDelete = 1,
+            updatedBy = @uid,
+            updatedDate = SYSDATETIME()
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0;
+      `);
+
+    // Soft delete images
+    await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        UPDATE dbo.cm_TransactionImages
+        SET isDelete = 1
+        WHERE transactionId = @transactionId
+          AND ISNULL(isDelete, 0) = 0;
+      `);
+
+    // Update balance
+    if (revert !== 0 && Number.isFinite(accId) && accId > 0) {
+      await new sql.Request(tx)
+        .input('uid', sql.Int, uid)
+        .input('accountId', sql.Int, accId)
+        .input('delta', sql.Decimal(18, 2), revert)
+        .query(`
+          UPDATE dbo.cm_Accounts
+          SET currentBalance = ISNULL(currentBalance, 0) + @delta,
+              updatedDate = SYSDATETIME(),
+              updatedBy = @uid
+          WHERE accountId = @accountId
+            AND userId = @uid
+            AND ISNULL(isDelete, 0) = 0;
+        `);
+    }
+
+    await tx.commit();
+    return res.json({ success: true, message: 'Đã xóa giao dịch' });
+  } catch (err) {
+    console.error('capmoney transactions delete error:', err);
+    try {
+      if (tx) await tx.rollback();
+    } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== PUT: /transactions/:transactionId/image ==================
+// Replace transaction image (soft delete old + insert new)
+router.put('/transactions/:transactionId/image', requireAuth, upload.single('image'), async (req, res) => {
+  let tx;
+  try {
+    const uid = req.user.userID;
+    const transactionId = Number(req.params.transactionId);
+    if (!Number.isFinite(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ success: false, message: 'transactionId không hợp lệ' });
+    }
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'Thiếu file image' });
+    }
+    const mime = (file.mimetype || '').toLowerCase();
+    const ext = getExtLower(file.originalname);
+    if (!mime.startsWith('image/') || BLOCKED_MIMES.has(mime) || BLOCKED_EXTS.has(ext)) {
+      return res.status(400).json({ success: false, message: 'File không hợp lệ' });
+    }
+
+    const pool = await poolPromise;
+    tx = new sql.Transaction(pool);
+    await tx.begin();
+
+    // Validate ownership + not deleted
+    const rTx = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        SELECT TOP 1 transactionId
+        FROM dbo.cm_Transactions
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0
+      `);
+    if (!rTx.recordset?.length) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Giao dịch không tồn tại' });
+    }
+
+    const uploadRoot = process.env.UPLOAD_ROOT || 'D:/uploads';
+    const publicBaseUrl = process.env.PUBLIC_BASE_URL || 'https://api.thuanhunglongan.com';
+
+    const relDir = `/uploads/images/capmoney/${transactionId}`;
+    const absDir = path.join(uploadRoot, 'images', 'capmoney', String(transactionId));
+    await fs.ensureDir(absDir);
+
+    const storedName = makeSafeStoredName(file.originalname);
+    const absPath = path.join(absDir, storedName);
+    await fs.writeFile(absPath, file.buffer);
+
+    const storagePath = `${relDir}/${storedName}`;
+    const imageUrl = `${String(publicBaseUrl).replace(/\/$/, '')}${storagePath}`;
+
+    // Soft delete old images
+    await new sql.Request(tx)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        UPDATE dbo.cm_TransactionImages
+        SET isDelete = 1
+        WHERE transactionId = @transactionId
+          AND ISNULL(isDelete, 0) = 0;
+      `);
+
+    // Insert new image as primary
+    await new sql.Request(tx)
+      .input('transactionId', sql.BigInt, transactionId)
+      .input('imageUrl', sql.NVarChar(500), imageUrl)
+      .input('imageName', sql.NVarChar(255), sanitizeFileName(file.originalname))
+      .input('imageType', sql.NVarChar(100), file.mimetype)
+      .input('fileSize', sql.BigInt, file.size)
+      .input('displayOrder', sql.Int, 1)
+      .input('createdBy', sql.Int, uid)
+      .query(`
+        INSERT INTO dbo.cm_TransactionImages
+          (transactionId, imageUrl, imageName, imageType, fileSize,
+           displayOrder, createdBy, createdDate, isDelete)
+        VALUES
+          (@transactionId, @imageUrl, @imageName, @imageType, @fileSize,
+           @displayOrder, @createdBy, GETDATE(), 0);
+      `);
+
+    await tx.commit();
+    return res.json({ success: true, data: { transactionId, imageUrl } });
+  } catch (err) {
+    console.error('capmoney transactions replace-image error:', err);
+    try {
+      if (tx) await tx.rollback();
+    } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== PUT: /transactions/:transactionId/date ==================
+// Update transaction date (YYYY-MM-DD)
+router.put('/transactions/:transactionId/date', requireAuth, async (req, res) => {
+  try {
+    const uid = req.user.userID;
+    const transactionId = Number(req.params.transactionId);
+    const { transactionDate } = req.body || {};
+
+    if (!Number.isFinite(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ success: false, message: 'transactionId không hợp lệ' });
+    }
+    if (!transactionDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(transactionDate))) {
+      return res.status(400).json({ success: false, message: 'transactionDate phải là YYYY-MM-DD' });
+    }
+
+    const pool = await poolPromise;
+    const r = await pool
+      .request()
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .input('transactionDate', sql.Date, String(transactionDate))
+      .query(`
+        UPDATE dbo.cm_Transactions
+        SET transactionDate = @transactionDate,
+            updatedBy = @uid,
+            updatedDate = SYSDATETIME()
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0;
+
+        SELECT @@ROWCOUNT AS affected;
+      `);
+
+    const affected = Number(r.recordset?.[0]?.affected || 0);
+    if (!affected) {
+      return res.status(404).json({ success: false, message: 'Giao dịch không tồn tại' });
+    }
+
+    return res.json({ success: true, data: { transactionId, transactionDate } });
+  } catch (err) {
+    console.error('capmoney transactions update-date error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== PUT: /transactions/:transactionId/category ==================
+// Update category (and transactionType based on category.transactionTypeId). Also adjusts account balance if type changes.
+router.put('/transactions/:transactionId/category', requireAuth, async (req, res) => {
+  let tx;
+  try {
+    const uid = req.user.userID;
+    const transactionId = Number(req.params.transactionId);
+    const { categoryId } = req.body || {};
+    const catId = Number(categoryId);
+
+    if (!Number.isFinite(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ success: false, message: 'transactionId không hợp lệ' });
+    }
+    if (!Number.isFinite(catId) || catId <= 0) {
+      return res.status(400).json({ success: false, message: 'categoryId không hợp lệ' });
+    }
+
+    const pool = await poolPromise;
+    tx = new sql.Transaction(pool);
+    await tx.begin();
+
+    // Load transaction
+    const rTx = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        SELECT TOP 1
+          transactionId,
+          transactionTypeId,
+          accountId,
+          amount
+        FROM dbo.cm_Transactions
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0
+      `);
+    const t = rTx.recordset?.[0];
+    if (!t) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Giao dịch không tồn tại' });
+    }
+
+    // Load category (must belong to user)
+    const rCat = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('categoryId', sql.Int, catId)
+      .query(`
+        SELECT TOP 1
+          categoryId,
+          categoryName,
+          transactionTypeId,
+          categoryIcon,
+          categoryColor
+        FROM dbo.cm_Categories
+        WHERE categoryId = @categoryId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0
+      `);
+    const c = rCat.recordset?.[0];
+    if (!c) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Danh mục không tồn tại' });
+    }
+
+    const oldType = Number(t.transactionTypeId);
+    const newType = Number(c.transactionTypeId);
+    const amountNum = Number(t.amount || 0);
+    const accId = Number(t.accountId);
+
+    // Adjust balance if type changes (expense=-1, income=+1)
+    if (oldType !== newType && [1, 2].includes(oldType) && [1, 2].includes(newType)) {
+      const oldSign = oldType === 1 ? -1 : 1;
+      const newSign = newType === 1 ? -1 : 1;
+      const delta = (newSign - oldSign) * amountNum; // e.g. -1 -> +1 => +2*amount
+      await new sql.Request(tx)
+        .input('uid', sql.Int, uid)
+        .input('accountId', sql.Int, accId)
+        .input('delta', sql.Decimal(18, 2), delta)
+        .query(`
+          UPDATE dbo.cm_Accounts
+          SET currentBalance = ISNULL(currentBalance, 0) + @delta,
+              updatedDate = SYSDATETIME(),
+              updatedBy = @uid
+          WHERE accountId = @accountId
+            AND userId = @uid
+            AND ISNULL(isDelete, 0) = 0;
+        `);
+    }
+
+    await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .input('categoryId', sql.Int, catId)
+      .input('transactionTypeId', sql.Int, newType)
+      .query(`
+        UPDATE dbo.cm_Transactions
+        SET categoryId = @categoryId,
+            transactionTypeId = @transactionTypeId,
+            updatedBy = @uid,
+            updatedDate = SYSDATETIME()
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0;
+      `);
+
+    await tx.commit();
+    return res.json({
+      success: true,
+      data: {
+        transactionId,
+        categoryId: c.categoryId,
+        categoryName: c.categoryName,
+        categoryIcon: c.categoryIcon,
+        categoryColor: c.categoryColor,
+        transactionTypeId: newType,
+      },
+    });
+  } catch (err) {
+    console.error('capmoney transactions update-category error:', err);
+    try {
+      if (tx) await tx.rollback();
+    } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== PUT: /transactions/:transactionId/account ==================
+// Update accountId and adjust balances accordingly
+router.put('/transactions/:transactionId/account', requireAuth, async (req, res) => {
+  let tx;
+  try {
+    const uid = req.user.userID;
+    const transactionId = Number(req.params.transactionId);
+    const { accountId } = req.body || {};
+    const newAccId = Number(accountId);
+
+    if (!Number.isFinite(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ success: false, message: 'transactionId không hợp lệ' });
+    }
+    if (!Number.isFinite(newAccId) || newAccId <= 0) {
+      return res.status(400).json({ success: false, message: 'accountId không hợp lệ' });
+    }
+
+    const pool = await poolPromise;
+    tx = new sql.Transaction(pool);
+    await tx.begin();
+
+    // Load transaction
+    const rTx = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        SELECT TOP 1
+          transactionId,
+          transactionTypeId,
+          accountId,
+          amount
+        FROM dbo.cm_Transactions
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0
+      `);
+    const t = rTx.recordset?.[0];
+    if (!t) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Giao dịch không tồn tại' });
+    }
+
+    const oldAccId = Number(t.accountId);
+    if (oldAccId === newAccId) {
+      await tx.rollback();
+      return res.json({ success: true, data: { transactionId, accountId: newAccId } });
+    }
+
+    // Validate new account belongs to user
+    const rAcc = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('accountId', sql.Int, newAccId)
+      .query(`
+        SELECT TOP 1 accountId, accountName
+        FROM dbo.cm_Accounts
+        WHERE accountId = @accountId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0
+      `);
+    const aNew = rAcc.recordset?.[0];
+    if (!aNew) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Tài khoản không tồn tại' });
+    }
+
+    const typeId = Number(t.transactionTypeId);
+    const amountNum = Number(t.amount || 0);
+    const sign = typeId === 1 ? -1 : typeId === 2 ? 1 : 0;
+    const deltaOld = -sign * amountNum; // revert old
+    const deltaNew = sign * amountNum; // apply to new
+
+    // Update balances
+    if (sign !== 0) {
+      await new sql.Request(tx)
+        .input('uid', sql.Int, uid)
+        .input('accountId', sql.Int, oldAccId)
+        .input('delta', sql.Decimal(18, 2), deltaOld)
+        .query(`
+          UPDATE dbo.cm_Accounts
+          SET currentBalance = ISNULL(currentBalance, 0) + @delta,
+              updatedDate = SYSDATETIME(),
+              updatedBy = @uid
+          WHERE accountId = @accountId
+            AND userId = @uid
+            AND ISNULL(isDelete, 0) = 0;
+        `);
+
+      await new sql.Request(tx)
+        .input('uid', sql.Int, uid)
+        .input('accountId', sql.Int, newAccId)
+        .input('delta', sql.Decimal(18, 2), deltaNew)
+        .query(`
+          UPDATE dbo.cm_Accounts
+          SET currentBalance = ISNULL(currentBalance, 0) + @delta,
+              updatedDate = SYSDATETIME(),
+              updatedBy = @uid
+          WHERE accountId = @accountId
+            AND userId = @uid
+            AND ISNULL(isDelete, 0) = 0;
+        `);
+    }
+
+    // Update transaction
+    await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .input('accountId', sql.Int, newAccId)
+      .query(`
+        UPDATE dbo.cm_Transactions
+        SET accountId = @accountId,
+            updatedBy = @uid,
+            updatedDate = SYSDATETIME()
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0;
+      `);
+
+    await tx.commit();
+    return res.json({
+      success: true,
+      data: { transactionId, accountId: newAccId, accountName: aNew.accountName },
+    });
+  } catch (err) {
+    console.error('capmoney transactions update-account error:', err);
+    try {
+      if (tx) await tx.rollback();
+    } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
