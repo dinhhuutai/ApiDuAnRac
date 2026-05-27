@@ -121,6 +121,7 @@ app.use('/api/ink-coverage', require('./InkCoveragePercentOnFilm/api'));
 app.use('/api/quality-inspection', require('./QualityInspection/api'));
 app.use('/api/mes', require('./MES/api'));
 app.use('/api/capmoney', require('./CapMoney/api'));
+app.use('/api/ggSheet', require('./GgSheet/api'));
 
 
 app.get("/users/get", async (req, res) => {

@@ -161,6 +161,8 @@ router.get('/home-summary', requireAuth, async (req, res) => {
           accountId,
           accountName,
           accountType,
+          accountIcon,
+          currencyCode,
           isDefault
         FROM dbo.cm_Accounts
         WHERE userId = @uid
@@ -1283,6 +1285,134 @@ router.put('/transactions/:transactionId/account', requireAuth, async (req, res)
     try {
       if (tx) await tx.rollback();
     } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== PUT: /transactions/:transactionId/amount ==================
+// Update amount and adjust account balance delta
+router.put('/transactions/:transactionId/amount', requireAuth, async (req, res) => {
+  let tx;
+  try {
+    const uid = req.user.userID;
+    const transactionId = Number(req.params.transactionId);
+    const { amount } = req.body || {};
+    const newAmount = Number(amount);
+
+    if (!Number.isFinite(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ success: false, message: 'transactionId không hợp lệ' });
+    }
+    if (!Number.isFinite(newAmount) || newAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'amount phải > 0' });
+    }
+
+    const pool = await poolPromise;
+    tx = new sql.Transaction(pool);
+    await tx.begin();
+
+    const rTx = await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .query(`
+        SELECT TOP 1
+          transactionId,
+          transactionTypeId,
+          accountId,
+          amount
+        FROM dbo.cm_Transactions
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0
+      `);
+    const t = rTx.recordset?.[0];
+    if (!t) {
+      await tx.rollback();
+      return res.status(404).json({ success: false, message: 'Giao dịch không tồn tại' });
+    }
+
+    const oldAmount = Number(t.amount || 0);
+    const typeId = Number(t.transactionTypeId);
+    const accId = Number(t.accountId);
+    const sign = typeId === 1 ? -1 : typeId === 2 ? 1 : 0;
+    const delta = sign * (newAmount - oldAmount);
+
+    if (sign !== 0 && delta !== 0) {
+      await new sql.Request(tx)
+        .input('uid', sql.Int, uid)
+        .input('accountId', sql.Int, accId)
+        .input('delta', sql.Decimal(18, 2), delta)
+        .query(`
+          UPDATE dbo.cm_Accounts
+          SET currentBalance = ISNULL(currentBalance, 0) + @delta,
+              updatedDate = SYSDATETIME(),
+              updatedBy = @uid
+          WHERE accountId = @accountId
+            AND userId = @uid
+            AND ISNULL(isDelete, 0) = 0;
+        `);
+    }
+
+    await new sql.Request(tx)
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .input('amount', sql.Decimal(18, 2), newAmount)
+      .query(`
+        UPDATE dbo.cm_Transactions
+        SET amount = @amount,
+            updatedBy = @uid,
+            updatedDate = SYSDATETIME()
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0;
+      `);
+
+    await tx.commit();
+    return res.json({ success: true, data: { transactionId, amount: newAmount } });
+  } catch (err) {
+    console.error('capmoney transactions update-amount error:', err);
+    try {
+      if (tx) await tx.rollback();
+    } catch {}
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================== PUT: /transactions/:transactionId/note ==================
+// Update detailNote (free text)
+router.put('/transactions/:transactionId/note', requireAuth, async (req, res) => {
+  try {
+    const uid = req.user.userID;
+    const transactionId = Number(req.params.transactionId);
+    const { detailNote } = req.body || {};
+
+    if (!Number.isFinite(transactionId) || transactionId <= 0) {
+      return res.status(400).json({ success: false, message: 'transactionId không hợp lệ' });
+    }
+
+    const note = String(detailNote ?? '').trim();
+    const pool = await poolPromise;
+    const r = await pool
+      .request()
+      .input('uid', sql.Int, uid)
+      .input('transactionId', sql.BigInt, transactionId)
+      .input('detailNote', sql.NVarChar(1000), note ? note : null)
+      .query(`
+        UPDATE dbo.cm_Transactions
+        SET detailNote = @detailNote,
+            updatedBy = @uid,
+            updatedDate = SYSDATETIME()
+        WHERE transactionId = @transactionId
+          AND userId = @uid
+          AND ISNULL(isDelete, 0) = 0;
+        SELECT @@ROWCOUNT AS affected;
+      `);
+
+    const affected = Number(r.recordset?.[0]?.affected || 0);
+    if (!affected) return res.status(404).json({ success: false, message: 'Giao dịch không tồn tại' });
+
+    return res.json({ success: true, data: { transactionId, detailNote: note } });
+  } catch (err) {
+    console.error('capmoney transactions update-note error:', err);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
