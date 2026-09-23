@@ -4,30 +4,52 @@ const fs = require('fs');
 const path = require('path');
 const archiver = require('archiver');
 
+function removeQuietly(p) {
+  try {
+    if (p && fs.existsSync(p)) fs.unlinkSync(p);
+  } catch (e) {
+    console.error('❌ Không xoá được file tạm:', p, e.message);
+  }
+}
+
 async function convertExcelsToPdf(files) {
   const pdfPaths = [];
 
-  for (const file of files) {
-    const workbook = XLSX.readFile(file.path);
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const htmlContent = XLSX.utils.sheet_to_html(sheet);
+  // 1 Chrome cho mọi file (trước đây mỗi file 1 Chrome, ~150–300 MB/lần), và
+  // luôn đóng Chrome + xoá file tạm kể cả khi lỗi — server chỉ có 4 GB RAM.
+  const browser = await puppeteer.launch({ headless: true });
+  try {
+    for (const file of files) {
+      const htmlPath = path.join(__dirname, '../uploads', `${file.filename}.html`);
+      try {
+        const workbook = XLSX.readFile(file.path);
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const htmlContent = XLSX.utils.sheet_to_html(sheet);
+        fs.writeFileSync(htmlPath, htmlContent);
 
-    const htmlPath = path.join(__dirname, '../uploads', `${file.filename}.html`);
-    fs.writeFileSync(htmlPath, htmlContent);
+        const page = await browser.newPage();
+        try {
+          await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0' });
 
-    const browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
-    await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0' });
-
-    const pdfPath = path.join(__dirname, '../uploads', `${file.originalname}.pdf`);
-    await page.pdf({ path: pdfPath, format: 'A4' });
-
+          const pdfPath = path.join(__dirname, '../uploads', `${file.originalname}.pdf`);
+          await page.pdf({ path: pdfPath, format: 'A4' });
+          pdfPaths.push(pdfPath);
+        } finally {
+          await page.close();
+        }
+      } finally {
+        removeQuietly(file.path);
+        removeQuietly(htmlPath);
+      }
+    }
+  } catch (err) {
+    pdfPaths.forEach(removeQuietly);
+    // xoá nốt file upload chưa kịp xử lý
+    files.forEach((f) => removeQuietly(f.path));
+    throw err;
+  } finally {
     await browser.close();
-    fs.unlinkSync(file.path);
-    fs.unlinkSync(htmlPath);
-
-    pdfPaths.push(pdfPath);
   }
 
   // Nếu nhiều PDF, trả về file zip

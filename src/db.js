@@ -25,7 +25,7 @@ const config = {
     encrypt: process.env.SQL_ENCRYPT === 'true',
     trustServerCertificate: true,
     enableArithAbort: true,
-    appName: process.env.SQL_APPNAME || 'ApiDuAnRac',
+    appName: process.env.SQL_APPNAME || 'NOIBO-API',
     keepAlive: true,
     keepAliveInitialDelay: Number(process.env.SQL_KEEPALIVE_DELAY || 10000),
   },

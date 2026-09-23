@@ -50,7 +50,6 @@ const { apiSuggestion } = require('./Suggestion/api');
 const { apiUtilsConvert } = require('./UtilsConvert/api');
 const { apiLunchOrder } = require('./LunchOrder/api');
 const { apiPayrollCalculation } = require('./PayrollCalculation/api');
-const { apiForm } = require('./Form/api');
 const { apiDryingCart } = require('./DryingCart/api');
 
 const { webPushLunchOrder } = require('./WebPush/pushRoutes');
@@ -88,6 +87,7 @@ app.use(cors({
     'https://master.d3q09n8s04589q.amplifyapp.com',
     'https://master.d3q09n8s04589q.amplifyapp.com/login',
     'http://localhost:3000',
+    'http://localhost:3001',
     'http://171.237.176.73:3000',
     'http://10.84.40.34:3000',
     'https://noibo.thuanhunglongan.com',
@@ -110,7 +110,6 @@ apiUtilsConvert(app);
 apiLunchOrder(app);
 webPushLunchOrder(app);
 apiPayrollCalculation(app);
-apiForm(app);
 apiDryingCart(app);
 
 
@@ -122,6 +121,7 @@ app.use('/api/quality-inspection', require('./QualityInspection/api'));
 app.use('/api/mes', require('./MES/api'));
 app.use('/api/capmoney', require('./CapMoney/api'));
 app.use('/api/ggSheet', require('./GgSheet/api'));
+app.use('/api/fm', require('./FormManagement/api')); // Module 9 — Biểu mẫu nội bộ (bảng fm_*, org_*)
 
 
 app.get("/users/get", async (req, res) => {
