@@ -35,9 +35,15 @@ async function _connectOnce() {
   const pool = await sql.connect(config);
   console.log('✅ Kết nối SQL Server thành công');
 
-  // Nếu pool có lỗi (ECONNRESET, ESOCKET, ...), bỏ pool để lần sau tạo lại
+  // Chỉ bỏ pool khi nó thật sự hỏng (ECONNRESET, ESOCKET, ECONNCLOSED...).
+  // KHÔNG bỏ pool vì một request hết giờ chờ (TimeoutError của tarn): đóng pool
+  // lúc đó bắt mọi request sau phải đăng nhập lại, mà đăng nhập là khâu chậm
+  // nhất khi server quá tải → hỏng dây chuyền.
   pool.on('error', err => {
-    console.error('[DB] Pool error:', err);
+    const fatal = !pool.connected
+      || ['ECONNRESET', 'ESOCKET', 'ECONNCLOSED', 'ENOTOPEN', 'ETIMEOUT'].includes(err?.code);
+    console.error(`[DB] Pool error (${fatal ? 'bỏ pool, sẽ kết nối lại' : 'bỏ qua, pool vẫn dùng được'}):`, err?.message || err);
+    if (!fatal) return;
     try { pool.close(); } catch {}
     _pool = null;
     _connecting = null;
