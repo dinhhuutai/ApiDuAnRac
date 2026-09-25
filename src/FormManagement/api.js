@@ -23,22 +23,34 @@ const moduleAdmin = requireModuleRole(MODULE_ID, ['admin']);
 
 const dt = (col, alias) => `CONVERT(varchar(19), ${col}, 126) AS ${alias}`;
 
-/** Người dùng có quyền module 9, đang hoạt động, kèm phòng ban/chức danh hiện tại */
+// Hồ sơ phòng ban/tổ/chức danh đọc qua view dbo.org_vUserProfiles (sql/09): org_UserProfiles,
+// nếu user chưa có hồ sơ thì lấy org_PendingProfiles theo MSNV (người được gán trước khi có tài khoản).
+// Ghi thì luôn ghi vào org_UserProfiles.
+
+/** Người dùng có quyền module 9, đang hoạt động, kèm phòng ban/tổ/chức danh hiện tại */
 const BASE_USERS_CTE = `
   base AS (
-    SELECT u.userID AS userId, u.fullName, u.msnv, p.departmentId, p.jobTitleId
+    SELECT u.userID AS userId, u.fullName, u.msnv, p.departmentId, p.teamId, p.jobTitleId
     FROM dbo.Users u
     JOIN dbo.UserModules um ON um.userId = u.userID AND um.moduleId = ${MODULE_ID}
-    LEFT JOIN dbo.org_UserProfiles p ON p.userId = u.userID
+    LEFT JOIN dbo.org_vUserProfiles p ON p.userId = u.userID
     WHERE u.isDeleted = 0 AND ISNULL(u.isActive, 0) = 1
   )`;
 
-/** Biểu thức: người dùng (alias u có userId/departmentId/jobTitleId) thuộc đối tượng của form f */
+/** CTE "me" (1 dòng) cho user @uid */
+const ME_CTE = `
+  me AS (
+    SELECT @uid AS userId, p.departmentId, p.teamId, p.jobTitleId
+    FROM (SELECT 1 AS x) z LEFT JOIN dbo.org_vUserProfiles p ON p.userId = @uid
+  )`;
+
+/** Biểu thức: người dùng (alias u có userId/departmentId/teamId/jobTitleId) thuộc đối tượng của form f */
 const audienceMatch = (f, u) => `(${f}.audienceType = N'all' OR EXISTS (
     SELECT 1 FROM dbo.fm_FormAudiences a
     WHERE a.formId = ${f}.formId AND (
       (a.targetType = N'user' AND a.targetId = ${u}.userId) OR
       (a.targetType = N'department' AND a.targetId = ${u}.departmentId) OR
+      (a.targetType = N'team' AND a.targetId = ${u}.teamId) OR
       (a.targetType = N'jobTitle' AND a.targetId = ${u}.jobTitleId))))`;
 
 const isOpenNowExpr = (f) => `CAST(CASE WHEN ${f}.acceptResponses = 1
@@ -71,22 +83,30 @@ async function getProfile(pool, userId) {
   const r = await pool.request().input('uid', sql.Int, userId).query(`
     SELECT u.userID AS userId, u.fullName, u.msnv,
            p.departmentId, d.name AS departmentName,
+           p.teamId, t.name AS teamName,
            p.jobTitleId, j.name AS jobTitleName, p.source
     FROM dbo.Users u
-    LEFT JOIN dbo.org_UserProfiles p ON p.userId = u.userID
+    LEFT JOIN dbo.org_vUserProfiles p ON p.userId = u.userID
     LEFT JOIN dbo.org_Departments d ON d.departmentId = p.departmentId
+    LEFT JOIN dbo.org_Teams t ON t.teamId = p.teamId
     LEFT JOIN dbo.org_JobTitles j ON j.jobTitleId = p.jobTitleId
     WHERE u.userID = @uid`);
   const p = r.recordset[0] || null;
-  if (p) p.isComplete = !!(p.departmentId && p.jobTitleId);
+  if (p) {
+    p.isComplete = !!(p.departmentId && p.jobTitleId);
+    // Admin đã gán phòng/tổ → nhân viên không tự đổi, nhưng vẫn tự chọn chức danh nếu còn trống
+    p.orgLocked = p.source === 'admin';
+    p.jobTitleLocked = p.source === 'admin' && !!p.jobTitleId;
+  }
   return p;
 }
 
 async function getOrgOptions(pool) {
   const r = await pool.request().query(`
     SELECT departmentId AS id, name FROM dbo.org_Departments WHERE isActive = 1 ORDER BY sortOrder, name;
-    SELECT jobTitleId AS id, name FROM dbo.org_JobTitles WHERE isActive = 1 ORDER BY sortOrder, name;`);
-  return { departments: r.recordsets[0], jobTitles: r.recordsets[1] };
+    SELECT jobTitleId AS id, name FROM dbo.org_JobTitles WHERE isActive = 1 ORDER BY sortOrder, name;
+    SELECT teamId AS id, name, departmentId FROM dbo.org_Teams WHERE isActive = 1 ORDER BY sortOrder, name;`);
+  return { departments: r.recordsets[0], jobTitles: r.recordsets[1], teams: r.recordsets[2] };
 }
 
 /** Câu hỏi của form. activeOnly=false: gồm cả câu đã gỡ còn câu trả lời (cho thống kê/xuất) */
@@ -110,29 +130,51 @@ router.get('/me/profile', moduleUser, async (req, res) => {
   } catch (err) { handleError(res, err, 'GET /me/profile'); }
 });
 
-// User tự khai phòng ban + chức danh (chỉ khi admin chưa gán)
+// User tự khai phòng ban + tổ + chức danh.
+// Admin đã gán (source = 'admin'): phòng/tổ giữ nguyên, user chỉ được chọn chức danh khi còn trống.
 router.put('/me/profile', moduleUser, async (req, res) => {
   try {
     const departmentId = parseId(req.body?.departmentId);
+    const teamId = parseId(req.body?.teamId);
     const jobTitleId = parseId(req.body?.jobTitleId);
-    if (!departmentId || !jobTitleId) throw new D.ValidationError('Vui lòng chọn phòng ban và chức danh');
+    if (!jobTitleId) throw new D.ValidationError('Vui lòng chọn chức danh');
     const pool = await poolPromise;
     await pool.request()
       .input('uid', sql.Int, req.user.userID)
       .input('dept', sql.Int, departmentId)
+      .input('team', sql.Int, teamId)
       .input('title', sql.Int, jobTitleId)
       .query(`
         SET XACT_ABORT ON;
-        IF NOT EXISTS (SELECT 1 FROM dbo.org_Departments WHERE departmentId = @dept AND isActive = 1)
-          THROW 50021, N'Phòng ban không hợp lệ', 1;
+        BEGIN TRAN;
+        DECLARE @src NVARCHAR(10), @curDept INT, @curTeam INT, @curTitle INT, @lock INT;
+        -- khoá dòng hồ sơ (hoặc khoảng khoá nếu chưa có) để 2 lần lưu cùng lúc không ghi đè nhau
+        SELECT @lock = userId FROM dbo.org_UserProfiles WITH (UPDLOCK, HOLDLOCK) WHERE userId = @uid;
+        SELECT @src = v.source, @curDept = v.departmentId, @curTeam = v.teamId, @curTitle = v.jobTitleId
+        FROM dbo.org_vUserProfiles v WHERE v.userId = @uid;
+
+        IF @src = N'admin'
+        BEGIN
+          IF @curTitle IS NOT NULL
+            THROW 50020, N'Thông tin của bạn do quản trị viên gán — liên hệ quản trị viên để thay đổi', 1;
+          SELECT @dept = @curDept, @team = @curTeam;
+        END
+        ELSE
+        BEGIN
+          IF @dept IS NULL OR NOT EXISTS (SELECT 1 FROM dbo.org_Departments WHERE departmentId = @dept AND isActive = 1)
+            THROW 50021, N'Vui lòng chọn phòng ban hợp lệ', 1;
+          IF @team IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.org_Teams WHERE teamId = @team AND departmentId = @dept AND isActive = 1)
+            THROW 50023, N'Tổ không thuộc phòng ban đã chọn', 1;
+        END
         IF NOT EXISTS (SELECT 1 FROM dbo.org_JobTitles WHERE jobTitleId = @title AND isActive = 1)
           THROW 50022, N'Chức danh không hợp lệ', 1;
-        IF EXISTS (SELECT 1 FROM dbo.org_UserProfiles WITH (UPDLOCK, HOLDLOCK) WHERE userId = @uid AND source = N'admin')
-          THROW 50020, N'Phòng ban/chức danh của bạn do quản trị viên gán — liên hệ quản trị viên để thay đổi', 1;
+
         MERGE dbo.org_UserProfiles AS t
         USING (SELECT @uid AS userId) AS s ON t.userId = s.userId
-        WHEN MATCHED THEN UPDATE SET departmentId = @dept, jobTitleId = @title, updatedAt = SYSDATETIME(), updatedBy = @uid
-        WHEN NOT MATCHED THEN INSERT (userId, departmentId, jobTitleId, source, updatedBy) VALUES (@uid, @dept, @title, N'self', @uid);`);
+        WHEN MATCHED THEN UPDATE SET departmentId = @dept, teamId = @team, jobTitleId = @title, updatedAt = SYSDATETIME(), updatedBy = @uid
+        WHEN NOT MATCHED THEN INSERT (userId, departmentId, teamId, jobTitleId, source, updatedBy)
+          VALUES (@uid, @dept, @team, @title, ISNULL(@src, N'self'), @uid);
+        COMMIT;`);
     ok(res, { profile: await getProfile(pool, req.user.userID) });
   } catch (err) { handleError(res, err, 'PUT /me/profile'); }
 });
@@ -142,10 +184,7 @@ router.get('/me/forms', moduleUser, async (req, res) => {
   try {
     const pool = await poolPromise;
     const r = await pool.request().input('uid', sql.Int, req.user.userID).query(`
-      WITH me AS (
-        SELECT @uid AS userId, p.departmentId, p.jobTitleId
-        FROM (SELECT 1 AS x) z LEFT JOIN dbo.org_UserProfiles p ON p.userId = @uid
-      )
+      WITH ${ME_CTE}
       SELECT f.formId, f.title, f.description, f.themeColor, f.allowEditAfterSubmit, f.allowMultiple,
              ${dt('f.openAt', 'openAt')}, ${dt('f.closeAt', 'closeAt')},
              ${isOpenNowExpr('f')} AS isOpenNow,
@@ -163,10 +202,7 @@ router.get('/me/forms', moduleUser, async (req, res) => {
 /** Form (đang hiện với user) + cờ trạng thái. null nếu user không được xem */
 async function loadVisibleFormForUser(pool, formId, userId) {
   const r = await pool.request().input('fid', sql.Int, formId).input('uid', sql.Int, userId).query(`
-    WITH me AS (
-      SELECT @uid AS userId, p.departmentId, p.jobTitleId
-      FROM (SELECT 1 AS x) z LEFT JOIN dbo.org_UserProfiles p ON p.userId = @uid
-    )
+    WITH ${ME_CTE}
     SELECT f.formId, f.title, f.description, f.themeColor, f.thankYouMessage,
            f.allowEditAfterSubmit, f.allowMultiple, f.requireProfile, f.acceptResponses,
            ${dt('f.openAt', 'openAt')}, ${dt('f.closeAt', 'closeAt')},
@@ -257,6 +293,8 @@ router.post('/me/forms/:id/submit', moduleUser, async (req, res) => {
       .input('msnv', sql.NVarChar(50), profile?.msnv || null)
       .input('deptId', sql.Int, profile?.departmentId || null)
       .input('deptName', sql.NVarChar(150), profile?.departmentName || null)
+      .input('teamId', sql.Int, profile?.teamId || null)
+      .input('teamName', sql.NVarChar(150), profile?.teamName || null)
       .input('titleId', sql.Int, profile?.jobTitleId || null)
       .input('titleName', sql.NVarChar(150), profile?.jobTitleName || null)
       .input('answers', sql.NVarChar(sql.MAX), JSON.stringify(rows))
@@ -273,8 +311,8 @@ router.post('/me/forms/:id/submit', moduleUser, async (req, res) => {
 
         IF @rid IS NULL
         BEGIN
-          INSERT INTO dbo.fm_Responses (formId, userId, fullName, msnv, departmentId, departmentName, jobTitleId, jobTitleName)
-          VALUES (@fid, @uid, @fullName, @msnv, @deptId, @deptName, @titleId, @titleName);
+          INSERT INTO dbo.fm_Responses (formId, userId, fullName, msnv, departmentId, departmentName, teamId, teamName, jobTitleId, jobTitleName)
+          VALUES (@fid, @uid, @fullName, @msnv, @deptId, @deptName, @teamId, @teamName, @titleId, @titleName);
           SET @rid = SCOPE_IDENTITY();
         END
         ELSE
@@ -282,7 +320,7 @@ router.post('/me/forms/:id/submit', moduleUser, async (req, res) => {
           SET @isEdit = 1;
           UPDATE dbo.fm_Responses
           SET fullName = @fullName, msnv = @msnv, departmentId = @deptId, departmentName = @deptName,
-              jobTitleId = @titleId, jobTitleName = @titleName,
+              teamId = @teamId, teamName = @teamName, jobTitleId = @titleId, jobTitleName = @titleName,
               updatedAt = SYSDATETIME(), editCount = editCount + 1
           WHERE responseId = @rid;
           DELETE FROM dbo.fm_Answers WHERE responseId = @rid;
@@ -339,6 +377,8 @@ async function loadAdminForm(pool, formId) {
     SELECT a.targetType, a.targetId,
            CASE a.targetType
              WHEN N'department' THEN (SELECT name FROM dbo.org_Departments WHERE departmentId = a.targetId)
+             WHEN N'team'       THEN (SELECT t.name + ISNULL(N' — ' + d.name, N'') FROM dbo.org_Teams t
+                                      LEFT JOIN dbo.org_Departments d ON d.departmentId = t.departmentId WHERE t.teamId = a.targetId)
              WHEN N'jobTitle'   THEN (SELECT name FROM dbo.org_JobTitles WHERE jobTitleId = a.targetId)
              WHEN N'user'       THEN (SELECT fullName + ISNULL(N' (' + msnv + N')', N'') FROM dbo.Users WHERE userID = a.targetId)
            END AS name
@@ -707,7 +747,7 @@ router.get('/admin/forms/:id/responses', moduleAdmin, async (req, res) => {
       .input('offset', sql.Int, (page - 1) * pageSize)
       .input('fetch', sql.Int, pageSize)
       .query(`
-        SELECT r.responseId, r.userId, r.fullName, r.msnv, r.departmentId, r.departmentName, r.jobTitleName,
+        SELECT r.responseId, r.userId, r.fullName, r.msnv, r.departmentId, r.departmentName, r.teamName, r.jobTitleName,
                ${dt('r.submittedAt', 'submittedAt')}, ${dt('r.updatedAt', 'updatedAt')}, r.editCount,
                COUNT(*) OVER () AS total
         FROM dbo.fm_Responses r
@@ -755,14 +795,15 @@ router.get('/admin/forms/:id/missing', moduleAdmin, async (req, res) => {
     if (!form) return;
     const r = await pool.request().input('fid', sql.Int, formId).query(`
       WITH ${BASE_USERS_CTE}
-      SELECT b.userId, b.fullName, b.msnv, d.name AS departmentName, j.name AS jobTitleName
+      SELECT b.userId, b.fullName, b.msnv, d.name AS departmentName, t.name AS teamName, j.name AS jobTitleName
       FROM base b
       JOIN dbo.fm_Forms f ON f.formId = @fid
       LEFT JOIN dbo.org_Departments d ON d.departmentId = b.departmentId
+      LEFT JOIN dbo.org_Teams t ON t.teamId = b.teamId
       LEFT JOIN dbo.org_JobTitles j ON j.jobTitleId = b.jobTitleId
       WHERE ${audienceMatch('f', 'b')}
         AND NOT EXISTS (SELECT 1 FROM dbo.fm_Responses r WHERE r.formId = @fid AND r.userId = b.userId)
-      ORDER BY CASE WHEN d.name IS NULL THEN 1 ELSE 0 END, d.sortOrder, d.name, b.fullName`);
+      ORDER BY CASE WHEN d.name IS NULL THEN 1 ELSE 0 END, d.sortOrder, d.name, t.sortOrder, t.name, b.fullName`);
     ok(res, r.recordset);
   } catch (err) { handleError(res, err, 'GET /admin/forms/:id/missing'); }
 });
@@ -782,18 +823,21 @@ router.delete('/admin/responses/:responseId', moduleAdmin, async (req, res) => {
 /* ================================ ADMIN — PHÒNG BAN / CHỨC DANH ================================ */
 
 const ORG = {
-  departments: { table: 'org_Departments', id: 'departmentId', profileCol: 'departmentId', hasCode: true },
+  departments: { table: 'org_Departments', id: 'departmentId', profileCol: 'departmentId', hasCode: true, hasPending: true },
+  teams: { table: 'org_Teams', id: 'teamId', profileCol: 'teamId', hasCode: true, hasDept: true, hasPending: true },
   'job-titles': { table: 'org_JobTitles', id: 'jobTitleId', profileCol: 'jobTitleId', hasCode: false },
 };
 
-function readOrgBody(body) {
+function readOrgBody(body, o) {
   const name = String(body?.name || '').trim();
   if (!name) throw new D.ValidationError('Chưa nhập tên');
   if (name.length > 150) throw new D.ValidationError('Tên quá dài');
   const code = String(body?.code || '').trim().slice(0, 50) || null;
   const sortOrder = Number.isInteger(Number(body?.sortOrder)) ? Number(body.sortOrder) : 0;
   const isActive = body?.isActive === undefined ? true : !!body.isActive;
-  return { name, code, sortOrder, isActive };
+  const departmentId = o.hasDept ? parseId(body?.departmentId) : null;
+  if (o.hasDept && !departmentId) throw new D.ValidationError('Chưa chọn phòng ban của tổ');
+  return { name, code, sortOrder, isActive, departmentId };
 }
 
 // Express 5 không hỗ trợ regex trong path (/:kind(a|b)) → đăng ký riêng từng loại
@@ -803,25 +847,29 @@ router.get(`/admin/org/${kind}`, moduleAdmin, async (req, res) => {
     const pool = await poolPromise;
     const r = await pool.request().query(`
       SELECT t.${o.id} AS id, t.name, ${o.hasCode ? 't.code' : 'NULL AS code'}, t.sortOrder, t.isActive,
-             (SELECT COUNT(*) FROM dbo.org_UserProfiles p JOIN dbo.Users u ON u.userID = p.userId
+             ${o.hasDept ? 't.departmentId, d.name AS departmentName,' : ''}
+             ${o.hasPending ? `(SELECT COUNT(*) FROM dbo.org_PendingProfiles e WHERE e.${o.profileCol} = t.${o.id}) AS pendingCount,` : ''}
+             (SELECT COUNT(*) FROM dbo.org_vUserProfiles p JOIN dbo.Users u ON u.userID = p.userId
               WHERE p.${o.profileCol} = t.${o.id} AND u.isDeleted = 0 AND ISNULL(u.isActive, 0) = 1) AS userCount
       FROM dbo.${o.table} t
-      ORDER BY t.isActive DESC, t.sortOrder, t.name`);
+      ${o.hasDept ? 'LEFT JOIN dbo.org_Departments d ON d.departmentId = t.departmentId' : ''}
+      ORDER BY t.isActive DESC, ${o.hasDept ? 'd.sortOrder, d.name, ' : ''}t.sortOrder, t.name`);
     ok(res, r.recordset);
   } catch (err) { handleError(res, err, `GET /admin/org/${kind}`); }
 });
 
 router.post(`/admin/org/${kind}`, moduleAdmin, async (req, res) => {
   try {
-    const b = readOrgBody(req.body);
+    const b = readOrgBody(req.body, o);
     const pool = await poolPromise;
     const r = await pool.request()
       .input('name', sql.NVarChar(150), b.name).input('code', sql.NVarChar(50), b.code)
+      .input('dept', sql.Int, b.departmentId)
       .input('sortOrder', sql.Int, b.sortOrder).input('actor', sql.Int, req.user.userID)
       .query(`
-        INSERT INTO dbo.${o.table} (name, ${o.hasCode ? 'code, ' : ''}sortOrder, createdBy)
+        INSERT INTO dbo.${o.table} (name, ${o.hasCode ? 'code, ' : ''}${o.hasDept ? 'departmentId, ' : ''}sortOrder, createdBy)
         OUTPUT INSERTED.${o.id} AS id
-        VALUES (@name, ${o.hasCode ? '@code, ' : ''}@sortOrder, @actor)`);
+        VALUES (@name, ${o.hasCode ? '@code, ' : ''}${o.hasDept ? '@dept, ' : ''}@sortOrder, @actor)`);
     ok(res, { id: r.recordset[0].id });
   } catch (err) { handleError(res, err, `POST /admin/org/${kind}`); }
 });
@@ -830,23 +878,34 @@ router.put(`/admin/org/${kind}/:id`, moduleAdmin, async (req, res) => {
   try {
     const id = parseId(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: 'Mã không hợp lệ' });
-    const b = readOrgBody(req.body);
+    const b = readOrgBody(req.body, o);
     const pool = await poolPromise;
     const r = await pool.request()
       .input('id', sql.Int, id).input('name', sql.NVarChar(150), b.name).input('code', sql.NVarChar(50), b.code)
+      .input('dept', sql.Int, b.departmentId)
       .input('sortOrder', sql.Int, b.sortOrder).input('isActive', sql.Bit, b.isActive).input('actor', sql.Int, req.user.userID)
       .query(`
+        SET XACT_ABORT ON;
+        BEGIN TRAN;
         UPDATE dbo.${o.table}
-        SET name = @name, ${o.hasCode ? 'code = @code, ' : ''}sortOrder = @sortOrder, isActive = @isActive,
+        SET name = @name, ${o.hasCode ? 'code = @code, ' : ''}${o.hasDept ? 'departmentId = @dept, ' : ''}sortOrder = @sortOrder, isActive = @isActive,
             updatedAt = SYSDATETIME(), updatedBy = @actor
-        WHERE ${o.id} = @id`);
-    if (!r.rowsAffected[0]) return res.status(404).json({ success: false, message: 'Không tìm thấy' });
+        WHERE ${o.id} = @id;
+        DECLARE @n INT = @@ROWCOUNT;
+        ${o.hasDept ? `-- chuyển tổ sang phòng khác → người trong tổ đi theo
+        UPDATE dbo.org_UserProfiles SET departmentId = @dept, updatedAt = SYSDATETIME(), updatedBy = @actor
+        WHERE teamId = @id AND ISNULL(departmentId, 0) <> @dept;
+        UPDATE dbo.org_PendingProfiles SET departmentId = @dept, updatedAt = SYSDATETIME()
+        WHERE teamId = @id AND ISNULL(departmentId, 0) <> @dept;` : ''}
+        COMMIT;
+        SELECT @n AS affected;`);
+    if (!r.recordset[0]?.affected) return res.status(404).json({ success: false, message: 'Không tìm thấy' });
     ok(res, { id });
   } catch (err) { handleError(res, err, `PUT /admin/org/${kind}/:id`); }
 });
 }
 
-// Danh sách nhân viên kèm phòng ban/chức danh (lọc, tìm, phân trang)
+// Danh sách nhân viên kèm phòng ban/tổ/chức danh (lọc, tìm, phân trang)
 router.get('/admin/org/users', moduleAdmin, async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -856,17 +915,20 @@ router.get('/admin/org/users', moduleAdmin, async (req, res) => {
     const r = await pool.request()
       .input('search', sql.NVarChar(100), search)
       .input('dept', sql.Int, parseId(req.query.departmentId))
+      .input('team', sql.Int, parseId(req.query.teamId))
       .input('title', sql.Int, parseId(req.query.jobTitleId))
       .input('missing', sql.Bit, req.query.missing === '1')
       .input('offset', sql.Int, (page - 1) * pageSize)
       .input('fetch', sql.Int, pageSize)
       .query(`
         SELECT u.userID AS userId, u.username, u.fullName, u.msnv,
-               p.departmentId, d.name AS departmentName, p.jobTitleId, j.name AS jobTitleName, p.source,
+               p.departmentId, d.name AS departmentName, p.teamId, t.name AS teamName,
+               p.jobTitleId, j.name AS jobTitleName, p.source, p.fromMsnv,
                COUNT(*) OVER () AS total
         FROM dbo.Users u
-        LEFT JOIN dbo.org_UserProfiles p ON p.userId = u.userID
+        LEFT JOIN dbo.org_vUserProfiles p ON p.userId = u.userID
         LEFT JOIN dbo.org_Departments d ON d.departmentId = p.departmentId
+        LEFT JOIN dbo.org_Teams t ON t.teamId = p.teamId
         LEFT JOIN dbo.org_JobTitles j ON j.jobTitleId = p.jobTitleId
         WHERE u.isDeleted = 0 AND ISNULL(u.isActive, 0) = 1
           AND (@search = N''
@@ -874,24 +936,43 @@ router.get('/admin/org/users', moduleAdmin, async (req, res) => {
                OR u.msnv LIKE N'%' + @search + N'%'
                OR u.username LIKE N'%' + @search + N'%')
           AND (@dept IS NULL OR p.departmentId = @dept)
+          AND (@team IS NULL OR p.teamId = @team)
           AND (@title IS NULL OR p.jobTitleId = @title)
           AND (@missing = 0 OR p.departmentId IS NULL OR p.jobTitleId IS NULL)
-        ORDER BY CASE WHEN d.name IS NULL THEN 0 ELSE 1 END, d.sortOrder, d.name, u.fullName
+        ORDER BY CASE WHEN d.name IS NULL THEN 0 ELSE 1 END, d.sortOrder, d.name, t.sortOrder, t.name, u.fullName
         OFFSET @offset ROWS FETCH NEXT @fetch ROWS ONLY`);
     ok(res, { total: r.recordset[0]?.total || 0, page, pageSize, rows: r.recordset.map(({ total, ...x }) => x) });
   } catch (err) { handleError(res, err, 'GET /admin/org/users'); }
 });
 
-// Gán hàng loạt: chỉ cập nhật trường được gửi lên (departmentId / jobTitleId; null = bỏ gán)
+// Người được gán phòng/tổ theo MSNV nhưng chưa có tài khoản (sql/09)
+router.get('/admin/org/pending', moduleAdmin, async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const r = await pool.request().query(`
+      SELECT e.msnv, e.fullName, d.name AS departmentName, t.name AS teamName
+      FROM dbo.org_PendingProfiles e
+      LEFT JOIN dbo.org_Departments d ON d.departmentId = e.departmentId
+      LEFT JOIN dbo.org_Teams t ON t.teamId = e.teamId
+      WHERE NOT EXISTS (SELECT 1 FROM dbo.Users u WHERE LTRIM(RTRIM(u.msnv)) = e.msnv)
+      ORDER BY d.sortOrder, d.name, t.sortOrder, t.name, e.fullName`);
+    ok(res, r.recordset);
+  } catch (err) { handleError(res, err, 'GET /admin/org/pending'); }
+});
+
+// Gán hàng loạt: chỉ cập nhật trường được gửi lên (departmentId / teamId / jobTitleId; null = bỏ gán).
+// Gán tổ mà không gửi phòng → phòng lấy theo tổ. Đổi phòng mà tổ cũ không thuộc phòng mới → bỏ tổ.
 router.put('/admin/org/users/profile', moduleAdmin, async (req, res) => {
   try {
     const b = req.body || {};
     const userIds = [...new Set((Array.isArray(b.userIds) ? b.userIds : []).map(parseId).filter(Boolean))];
     if (!userIds.length) throw new D.ValidationError('Chưa chọn nhân viên');
     if (userIds.length > 1000) throw new D.ValidationError('Tối đa 1000 nhân viên mỗi lần');
-    const setDept = Object.prototype.hasOwnProperty.call(b, 'departmentId');
-    const setTitle = Object.prototype.hasOwnProperty.call(b, 'jobTitleId');
-    if (!setDept && !setTitle) throw new D.ValidationError('Chưa chọn phòng ban hoặc chức danh để gán');
+    const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+    const setDept = has('departmentId');
+    const setTeam = has('teamId');
+    const setTitle = has('jobTitleId');
+    if (!setDept && !setTeam && !setTitle) throw new D.ValidationError('Chưa chọn phòng ban, tổ hoặc chức danh để gán');
     // allowSelfEdit = true: cho nhân viên tự sửa lại (source = 'self')
     const source = b.allowSelfEdit ? 'self' : 'admin';
 
@@ -899,6 +980,7 @@ router.put('/admin/org/users/profile', moduleAdmin, async (req, res) => {
     const r = await pool.request()
       .input('ids', sql.NVarChar(sql.MAX), JSON.stringify(userIds))
       .input('setDept', sql.Bit, setDept).input('dept', sql.Int, setDept ? parseId(b.departmentId) : null)
+      .input('setTeam', sql.Bit, setTeam).input('team', sql.Int, setTeam ? parseId(b.teamId) : null)
       .input('setTitle', sql.Bit, setTitle).input('title', sql.Int, setTitle ? parseId(b.jobTitleId) : null)
       .input('source', sql.NVarChar(10), source).input('actor', sql.Int, req.user.userID)
       .query(`
@@ -907,18 +989,46 @@ router.put('/admin/org/users/profile', moduleAdmin, async (req, res) => {
           THROW 50021, N'Phòng ban không hợp lệ', 1;
         IF @setTitle = 1 AND @title IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.org_JobTitles WHERE jobTitleId = @title)
           THROW 50022, N'Chức danh không hợp lệ', 1;
+        DECLARE @teamDept INT = NULL;
+        IF @setTeam = 1 AND @team IS NOT NULL
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM dbo.org_Teams WHERE teamId = @team)
+            THROW 50023, N'Tổ không hợp lệ', 1;
+          SELECT @teamDept = departmentId FROM dbo.org_Teams WHERE teamId = @team;
+          IF @setDept = 1 AND ISNULL(@dept, 0) <> ISNULL(@teamDept, 0)
+            THROW 50024, N'Tổ không thuộc phòng ban đã chọn', 1;
+          IF @setDept = 0 AND @teamDept IS NOT NULL SELECT @setDept = 1, @dept = @teamDept;
+        END
+
+        -- Nguồn = hồ sơ hiệu lực (kể cả phần đang lấy theo MSNV) để không làm mất trường không gán
+        DECLARE @s TABLE (userId INT PRIMARY KEY, departmentId INT NULL, teamId INT NULL, jobTitleId INT NULL);
+        INSERT INTO @s (userId, departmentId, teamId, jobTitleId)
+        SELECT u.userID,
+               CASE WHEN @setDept = 1 THEN @dept ELSE v.departmentId END,
+               v.teamId,
+               CASE WHEN @setTitle = 1 THEN @title ELSE v.jobTitleId END
+        FROM (SELECT DISTINCT CAST(j.[value] AS INT) AS id FROM OPENJSON(@ids) j) x
+        JOIN dbo.Users u ON u.userID = x.id
+        LEFT JOIN dbo.org_vUserProfiles v ON v.userId = u.userID;
+
+        UPDATE s SET teamId = CASE
+            WHEN @setTeam = 1 THEN @team
+            WHEN s.teamId IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM dbo.org_Teams ot WHERE ot.teamId = s.teamId AND ot.departmentId = s.departmentId) THEN NULL
+            ELSE s.teamId END
+        FROM @s s;
+
+        BEGIN TRAN;
         MERGE dbo.org_UserProfiles AS t
-        USING (
-          SELECT DISTINCT u.userID AS userId
-          FROM OPENJSON(@ids) j JOIN dbo.Users u ON u.userID = CAST(j.[value] AS INT)
-        ) AS s ON t.userId = s.userId
+        USING @s AS s ON t.userId = s.userId
         WHEN MATCHED THEN UPDATE SET
-          departmentId = CASE WHEN @setDept = 1 THEN @dept ELSE t.departmentId END,
-          jobTitleId   = CASE WHEN @setTitle = 1 THEN @title ELSE t.jobTitleId END,
+          departmentId = s.departmentId, teamId = s.teamId, jobTitleId = s.jobTitleId,
           source = @source, updatedAt = SYSDATETIME(), updatedBy = @actor
-        WHEN NOT MATCHED THEN INSERT (userId, departmentId, jobTitleId, source, updatedBy)
-          VALUES (s.userId, CASE WHEN @setDept = 1 THEN @dept END, CASE WHEN @setTitle = 1 THEN @title END, @source, @actor);
-        SELECT @@ROWCOUNT AS affected;`);
+        WHEN NOT MATCHED THEN INSERT (userId, departmentId, teamId, jobTitleId, source, updatedBy)
+          VALUES (s.userId, s.departmentId, s.teamId, s.jobTitleId, @source, @actor);
+        DECLARE @n INT = @@ROWCOUNT;
+        COMMIT;
+        SELECT @n AS affected;`);
     ok(res, { affected: r.recordset[0]?.affected || 0 });
   } catch (err) { handleError(res, err, 'PUT /admin/org/users/profile'); }
 });

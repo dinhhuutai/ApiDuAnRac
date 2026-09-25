@@ -154,7 +154,7 @@ function normalizeDefinition(body) {
   if (audienceType === 'targeted') {
     const seen = new Set();
     for (const a of Array.isArray(b.audiences) ? b.audiences : []) {
-      const targetType = ['department', 'jobTitle', 'user'].includes(a?.targetType) ? a.targetType : null;
+      const targetType = ['department', 'team', 'jobTitle', 'user'].includes(a?.targetType) ? a.targetType : null;
       const targetId = Number(a?.targetId);
       if (!targetType || !Number.isInteger(targetId) || targetId <= 0) continue;
       const key = `${targetType}:${targetId}`;
