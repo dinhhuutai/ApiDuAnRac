@@ -23,9 +23,21 @@ const moduleAdmin = requireModuleRole(MODULE_ID, ['admin']);
 
 const dt = (col, alias) => `CONVERT(varchar(19), ${col}, 126) AS ${alias}`;
 
-// Hồ sơ phòng ban/tổ/chức danh đọc qua view dbo.org_vUserProfiles (sql/09): org_UserProfiles,
-// nếu user chưa có hồ sơ thì lấy org_PendingProfiles theo MSNV (người được gán trước khi có tài khoản).
-// Ghi thì luôn ghi vào org_UserProfiles.
+// Hồ sơ phòng ban/tổ/chức danh hiệu lực: org_UserProfiles, nếu user chưa có hồ sơ thì lấy
+// org_PendingProfiles theo MSNV (người được gán trước khi có tài khoản — sql/09). Ghi luôn vào org_UserProfiles.
+// KHÔNG join view dbo.org_vUserProfiles trong truy vấn danh sách: SQL Server chọn kế hoạch rất tệ
+// (danh sách nhân viên 25 giây, đo 2026-09-25) — OUTER APPLY dưới đây cùng kết quả, ~0,2 giây.
+
+/** OUTER APPLY → alias p (departmentId, teamId, jobTitleId, source, fromMsnv) cho user alias `u` (có userID, msnv) */
+const profileApply = (u, p = 'p') => `
+    OUTER APPLY (
+      SELECT TOP 1 x.departmentId, x.teamId, x.jobTitleId, x.source, x.fromMsnv FROM (
+        SELECT up.departmentId, up.teamId, up.jobTitleId, up.source, CAST(0 AS BIT) AS fromMsnv, 0 AS pri
+        FROM dbo.org_UserProfiles up WHERE up.userId = ${u}.userID
+        UNION ALL
+        SELECT e.departmentId, e.teamId, e.jobTitleId, N'admin', CAST(1 AS BIT), 1
+        FROM dbo.org_PendingProfiles e WHERE e.msnv = LTRIM(RTRIM(${u}.msnv))
+      ) x ORDER BY x.pri) ${p}`;
 
 /** Người dùng có quyền module 9, đang hoạt động, kèm phòng ban/tổ/chức danh hiện tại */
 const BASE_USERS_CTE = `
@@ -33,7 +45,7 @@ const BASE_USERS_CTE = `
     SELECT u.userID AS userId, u.fullName, u.msnv, p.departmentId, p.teamId, p.jobTitleId
     FROM dbo.Users u
     JOIN dbo.UserModules um ON um.userId = u.userID AND um.moduleId = ${MODULE_ID}
-    LEFT JOIN dbo.org_vUserProfiles p ON p.userId = u.userID
+    ${profileApply('u')}
     WHERE u.isDeleted = 0 AND ISNULL(u.isActive, 0) = 1
   )`;
 
@@ -41,7 +53,8 @@ const BASE_USERS_CTE = `
 const ME_CTE = `
   me AS (
     SELECT @uid AS userId, p.departmentId, p.teamId, p.jobTitleId
-    FROM (SELECT 1 AS x) z LEFT JOIN dbo.org_vUserProfiles p ON p.userId = @uid
+    FROM (SELECT @uid AS userID, (SELECT msnv FROM dbo.Users WHERE userID = @uid) AS msnv) u
+    ${profileApply('u')}
   )`;
 
 /** Biểu thức: người dùng (alias u có userId/departmentId/teamId/jobTitleId) thuộc đối tượng của form f */
@@ -86,7 +99,7 @@ async function getProfile(pool, userId) {
            p.teamId, t.name AS teamName,
            p.jobTitleId, j.name AS jobTitleName, p.source
     FROM dbo.Users u
-    LEFT JOIN dbo.org_vUserProfiles p ON p.userId = u.userID
+    ${profileApply('u')}
     LEFT JOIN dbo.org_Departments d ON d.departmentId = p.departmentId
     LEFT JOIN dbo.org_Teams t ON t.teamId = p.teamId
     LEFT JOIN dbo.org_JobTitles j ON j.jobTitleId = p.jobTitleId
@@ -151,7 +164,7 @@ router.put('/me/profile', moduleUser, async (req, res) => {
         -- khoá dòng hồ sơ (hoặc khoảng khoá nếu chưa có) để 2 lần lưu cùng lúc không ghi đè nhau
         SELECT @lock = userId FROM dbo.org_UserProfiles WITH (UPDLOCK, HOLDLOCK) WHERE userId = @uid;
         SELECT @src = v.source, @curDept = v.departmentId, @curTeam = v.teamId, @curTitle = v.jobTitleId
-        FROM dbo.org_vUserProfiles v WHERE v.userId = @uid;
+        FROM dbo.Users u ${profileApply('u', 'v')} WHERE u.userID = @uid;
 
         IF @src = N'admin'
         BEGIN
@@ -846,12 +859,18 @@ router.get(`/admin/org/${kind}`, moduleAdmin, async (req, res) => {
   try {
     const pool = await poolPromise;
     const r = await pool.request().query(`
+      WITH cnt AS (
+        SELECT p.${o.profileCol} AS id, COUNT(*) AS n
+        FROM dbo.Users u ${profileApply('u')}
+        WHERE u.isDeleted = 0 AND ISNULL(u.isActive, 0) = 1 AND p.${o.profileCol} IS NOT NULL
+        GROUP BY p.${o.profileCol}
+      )
       SELECT t.${o.id} AS id, t.name, ${o.hasCode ? 't.code' : 'NULL AS code'}, t.sortOrder, t.isActive,
              ${o.hasDept ? 't.departmentId, d.name AS departmentName,' : ''}
              ${o.hasPending ? `(SELECT COUNT(*) FROM dbo.org_PendingProfiles e WHERE e.${o.profileCol} = t.${o.id}) AS pendingCount,` : ''}
-             (SELECT COUNT(*) FROM dbo.org_vUserProfiles p JOIN dbo.Users u ON u.userID = p.userId
-              WHERE p.${o.profileCol} = t.${o.id} AND u.isDeleted = 0 AND ISNULL(u.isActive, 0) = 1) AS userCount
+             ISNULL(c.n, 0) AS userCount
       FROM dbo.${o.table} t
+      LEFT JOIN cnt c ON c.id = t.${o.id}
       ${o.hasDept ? 'LEFT JOIN dbo.org_Departments d ON d.departmentId = t.departmentId' : ''}
       ORDER BY t.isActive DESC, ${o.hasDept ? 'd.sortOrder, d.name, ' : ''}t.sortOrder, t.name`);
     ok(res, r.recordset);
@@ -926,7 +945,7 @@ router.get('/admin/org/users', moduleAdmin, async (req, res) => {
                p.jobTitleId, j.name AS jobTitleName, p.source, p.fromMsnv,
                COUNT(*) OVER () AS total
         FROM dbo.Users u
-        LEFT JOIN dbo.org_vUserProfiles p ON p.userId = u.userID
+        ${profileApply('u')}
         LEFT JOIN dbo.org_Departments d ON d.departmentId = p.departmentId
         LEFT JOIN dbo.org_Teams t ON t.teamId = p.teamId
         LEFT JOIN dbo.org_JobTitles j ON j.jobTitleId = p.jobTitleId
@@ -1009,7 +1028,7 @@ router.put('/admin/org/users/profile', moduleAdmin, async (req, res) => {
                CASE WHEN @setTitle = 1 THEN @title ELSE v.jobTitleId END
         FROM (SELECT DISTINCT CAST(j.[value] AS INT) AS id FROM OPENJSON(@ids) j) x
         JOIN dbo.Users u ON u.userID = x.id
-        LEFT JOIN dbo.org_vUserProfiles v ON v.userId = u.userID;
+        ${profileApply('u', 'v')};
 
         UPDATE s SET teamId = CASE
             WHEN @setTeam = 1 THEN @team
