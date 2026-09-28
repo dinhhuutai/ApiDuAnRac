@@ -34,8 +34,12 @@ webpush.setVapidDetails(
 //require('./jobs/lunchToday11h25Job');
 //require('./jobs/lunchFeedback1150Job');
 
-//Tạo task lặp hằng ngày;
-require('./TaskManagement/cron/repeatDailyCron');
+// Module đã tắt (không dùng nữa) — xem src/config/modules.js
+const { isModuleEnabled, sqlExcludeDisabled, DISABLED_MODULE_IDS } = require('./config/modules');
+console.log('[modules] Đã tắt module:', DISABLED_MODULE_IDS.join(', ') || '(không)');
+
+//Tạo task lặp hằng ngày (module 3 — Quản lý công việc)
+if (isModuleEnabled(3)) require('./TaskManagement/cron/repeatDailyCron');
 
 
 const uploadClassification = require('./middleware/uploadClassification');
@@ -44,13 +48,11 @@ const { signAccessToken, signRefreshToken, setRefreshCookie } = require('./utils
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 
-const { apiInkWeighing } = require('./InkWeighing/api');
 const { apiFeedback } = require('./Feedback/api');
 const { apiSuggestion } = require('./Suggestion/api');
 const { apiUtilsConvert } = require('./UtilsConvert/api');
 const { apiLunchOrder } = require('./LunchOrder/api');
 const { apiPayrollCalculation } = require('./PayrollCalculation/api');
-const { apiDryingCart } = require('./DryingCart/api');
 
 const { webPushLunchOrder } = require('./WebPush/pushRoutes');
 
@@ -103,23 +105,24 @@ app.get('/', (req, res) => {
   res.status(200).send('API is running');
 });
 
-apiInkWeighing(app);
 apiFeedback(app);
 apiSuggestion(app);
 apiUtilsConvert(app);
 apiLunchOrder(app);
 webPushLunchOrder(app);
 apiPayrollCalculation(app);
-apiDryingCart(app);
 
+// Module có thể tắt — chỉ require khi bật để không nạp code/kết nối thừa (src/config/modules.js)
+if (isModuleEnabled(2)) require('./InkWeighing/api').apiInkWeighing(app);          // Cân mực
+if (isModuleEnabled(10)) require('./DryingCart/api').apiDryingCart(app);           // Xe phơi vải
+if (isModuleEnabled(3)) app.use('/api/task-management', require('./TaskManagement/api')); // Công việc
+if ([13, 14, 15].some(isModuleEnabled)) app.use('/api/quality-inspection', require('./QualityInspection/api')); // OQC/KCS/Gom hàng
+if (isModuleEnabled(16)) app.use('/api/mes', require('./MES/api'));               // MES
+if (isModuleEnabled(17)) app.use('/api/capmoney', require('./CapMoney/api'));     // Chi tiêu
 
-app.use('/api/task-management', require('./TaskManagement/api'));
 app.use('/api/presence', require('./presence/api'));
 app.use('/pageview', require('./pageviewRouter/api'));
 app.use('/api/ink-coverage', require('./InkCoveragePercentOnFilm/api'));
-app.use('/api/quality-inspection', require('./QualityInspection/api'));
-app.use('/api/mes', require('./MES/api'));
-app.use('/api/capmoney', require('./CapMoney/api'));
 app.use('/api/ggSheet', require('./GgSheet/api'));
 app.use('/api/fm', require('./FormManagement/api')); // Module 9 — Biểu mẫu nội bộ (bảng fm_*, org_*)
 
@@ -1255,7 +1258,7 @@ app.post('/login', async (req, res) => {
         SELECT m.moduleId, m.name, um.role
         FROM dbo.UserModules um
         JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId = @uid
+        WHERE um.userId = @uid ${sqlExcludeDisabled('m.moduleId')}
         ORDER BY m.moduleId
       `);
     const modules = rMods.recordset || [];
@@ -1267,7 +1270,7 @@ app.post('/login', async (req, res) => {
         ;WITH UM AS (
           SELECT um.userId, um.moduleId, um.role
           FROM dbo.UserModules um
-          WHERE um.userId = @uid
+          WHERE um.userId = @uid ${sqlExcludeDisabled('um.moduleId')}
         )
         SELECT
           f.moduleId,
@@ -1418,7 +1421,7 @@ app.get('/api/me/permissions', requireAuth, async (req, res) => {
         SELECT m.moduleId, m.name, um.role
         FROM dbo.UserModules um
         JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId = @uid
+        WHERE um.userId = @uid ${sqlExcludeDisabled('m.moduleId')}
         ORDER BY m.moduleId
       `);
     const modules = rMods.recordset || [];
@@ -1429,7 +1432,7 @@ app.get('/api/me/permissions', requireAuth, async (req, res) => {
         ;WITH UM AS (
           SELECT um.userId, um.moduleId, um.role
           FROM dbo.UserModules um
-          WHERE um.userId = @uid
+          WHERE um.userId = @uid ${sqlExcludeDisabled('um.moduleId')}
         )
         SELECT
           f.moduleId, f.featureId, f.code, f.name,
@@ -1642,7 +1645,7 @@ app.get('/api/users', async (req, res) => {
         SELECT um.userId, um.moduleId, um.role, m.name
         FROM dbo.UserModules um
         INNER JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId IN (${idList})
+        WHERE um.userId IN (${idList}) ${sqlExcludeDisabled('m.moduleId')}
       `);
 
       const byUser = {};
@@ -1950,7 +1953,7 @@ app.get('/api/users/:userId/modules-roles', async (req, res) => {
         SELECT COUNT(*) AS total
         FROM dbo.UserModules um
         INNER JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId=@userId
+        WHERE um.userId=@userId ${sqlExcludeDisabled('m.moduleId')}
           AND (@q='%%' OR m.name LIKE @q OR m.description LIKE @q)
       `);
     const total = rCount.recordset[0]?.total || 0;
@@ -1964,7 +1967,7 @@ app.get('/api/users/:userId/modules-roles', async (req, res) => {
         SELECT m.moduleId, m.name, m.icon, m.description, um.role
         FROM dbo.UserModules um
         INNER JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId=@userId
+        WHERE um.userId=@userId ${sqlExcludeDisabled('m.moduleId')}
           AND (@q='%%' OR m.name LIKE @q OR m.description LIKE @q)
         ORDER BY m.moduleId ASC
         OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
@@ -3532,7 +3535,7 @@ app.get('/api/modules', async (req, res) => {
       .query(`
         SELECT COUNT(*) AS total
         FROM dbo.Modules
-        WHERE (@q = '%%' OR name LIKE @q OR description LIKE @q OR moduleKey LIKE @q)
+        WHERE (@q = '%%' OR name LIKE @q OR description LIKE @q OR moduleKey LIKE @q) ${sqlExcludeDisabled('moduleId')}
       `);
     const total = rCount.recordset[0]?.total || 0;
 
@@ -3543,7 +3546,7 @@ app.get('/api/modules', async (req, res) => {
       .query(`
         SELECT moduleId, name, moduleKey, icon, description
         FROM dbo.Modules
-        WHERE (@q = '%%' OR name LIKE @q OR description LIKE @q OR moduleKey LIKE @q)
+        WHERE (@q = '%%' OR name LIKE @q OR description LIKE @q OR moduleKey LIKE @q) ${sqlExcludeDisabled('moduleId')}
         ORDER BY moduleId ASC
         OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
       `);
@@ -3751,7 +3754,7 @@ app.get('/api/user-modules/:userId', async (req, res) => {
                m.name, m.icon, m.description
         FROM dbo.UserModules um
         JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId = @userId
+        WHERE um.userId = @userId ${sqlExcludeDisabled('m.moduleId')}
         ORDER BY m.name ASC
       `);
 
@@ -3780,13 +3783,14 @@ app.put('/api/user-modules/:userId', async (req, res) => {
   try {
     await tx.begin();
 
-    // Xoá tất cả quyền hiện tại của user
+    // Xoá quyền hiện tại của user — TRỪ module đã tắt: giao diện không còn hiện các module này,
+    // nên payload không có chúng; xoá đi thì bật lại module sẽ mất phân quyền cũ.
     await new sql.Request(tx)
       .input('userId', sql.Int, userId)
-      .query(`DELETE FROM dbo.UserModules WHERE userId=@userId`);
+      .query(`DELETE FROM dbo.UserModules WHERE userId=@userId ${sqlExcludeDisabled('moduleId')}`);
 
-    // Chèn lại theo payload
-    for (const a of assignments) {
+    // Chèn lại theo payload (bỏ qua module đã tắt nếu có)
+    for (const a of assignments.filter((x) => isModuleEnabled(Number(x.moduleId)))) {
       await new sql.Request(tx)
         .input('userId', sql.Int, userId)
         .input('moduleId', sql.Int, a.moduleId)
@@ -3871,7 +3875,7 @@ app.get("/api/users/:userId/modules-roles", async (req, res) => {
         SELECT COUNT(*) AS total
         FROM dbo.UserModules um
         INNER JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId = @userId
+        WHERE um.userId = @userId ${sqlExcludeDisabled('m.moduleId')}
           AND (@q = '%' OR m.name LIKE @q OR m.description LIKE @q)
       `);
 
@@ -3892,7 +3896,7 @@ app.get("/api/users/:userId/modules-roles", async (req, res) => {
           um.role
         FROM dbo.UserModules um
         INNER JOIN dbo.Modules m ON m.moduleId = um.moduleId
-        WHERE um.userId = @userId
+        WHERE um.userId = @userId ${sqlExcludeDisabled('m.moduleId')}
           AND (@q = '%' OR m.name LIKE @q OR m.description LIKE @q)
         ORDER BY m.moduleId ASC
         OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY
