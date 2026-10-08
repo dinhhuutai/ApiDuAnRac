@@ -18,26 +18,17 @@ const MODULE_ID = 9;
 router.use(requireAuth);
 const moduleUser = requireModuleRole(MODULE_ID, ['user', 'admin']);
 const moduleAdmin = requireModuleRole(MODULE_ID, ['admin']);
+// Hồ sơ phòng ban/tổ/chức danh và danh mục org_* dùng chung với module 18 "Quản lý yêu cầu"
+const profileUser = requireModuleRole([MODULE_ID, 18], ['user', 'admin']);
+const orgAdmin = requireModuleRole([MODULE_ID, 18], ['admin']);
 
 /* ================================ HELPERS ================================ */
 
 const dt = (col, alias) => `CONVERT(varchar(19), ${col}, 126) AS ${alias}`;
 
-// Hồ sơ phòng ban/tổ/chức danh hiệu lực: org_UserProfiles, nếu user chưa có hồ sơ thì lấy
-// org_PendingProfiles theo MSNV (người được gán trước khi có tài khoản — sql/09). Ghi luôn vào org_UserProfiles.
-// KHÔNG join view dbo.org_vUserProfiles trong truy vấn danh sách: SQL Server chọn kế hoạch rất tệ
-// (danh sách nhân viên 25 giây, đo 2026-09-25) — OUTER APPLY dưới đây cùng kết quả, ~0,2 giây.
-
-/** OUTER APPLY → alias p (departmentId, teamId, jobTitleId, source, fromMsnv) cho user alias `u` (có userID, msnv) */
-const profileApply = (u, p = 'p') => `
-    OUTER APPLY (
-      SELECT TOP 1 x.departmentId, x.teamId, x.jobTitleId, x.source, x.fromMsnv FROM (
-        SELECT up.departmentId, up.teamId, up.jobTitleId, up.source, CAST(0 AS BIT) AS fromMsnv, 0 AS pri
-        FROM dbo.org_UserProfiles up WHERE up.userId = ${u}.userID
-        UNION ALL
-        SELECT e.departmentId, e.teamId, e.jobTitleId, N'admin', CAST(1 AS BIT), 1
-        FROM dbo.org_PendingProfiles e WHERE e.msnv = LTRIM(RTRIM(${u}.msnv))
-      ) x ORDER BY x.pri) ${p}`;
+// Hồ sơ phòng ban/tổ/chức danh hiệu lực (org_UserProfiles → theo MSNV) — xem utils/orgProfile.js.
+// KHÔNG join view dbo.org_vUserProfiles trong truy vấn danh sách (25 giây) — dùng profileApply().
+const { profileApply } = require('../utils/orgProfile');
 
 /** Người dùng có quyền module 9, đang hoạt động, kèm phòng ban/tổ/chức danh hiện tại */
 const BASE_USERS_CTE = `
@@ -135,7 +126,7 @@ async function getQuestions(pool, formId, { activeOnly = true, withAnswerCount =
 
 /* ============================ NGƯỜI DÙNG (module 9) ============================ */
 
-router.get('/me/profile', moduleUser, async (req, res) => {
+router.get('/me/profile', profileUser, async (req, res) => {
   try {
     const pool = await poolPromise;
     const [profile, options] = await Promise.all([getProfile(pool, req.user.userID), getOrgOptions(pool)]);
@@ -145,7 +136,7 @@ router.get('/me/profile', moduleUser, async (req, res) => {
 
 // User tự khai phòng ban + tổ + chức danh.
 // Admin đã gán (source = 'admin'): phòng/tổ giữ nguyên, user chỉ được chọn chức danh khi còn trống.
-router.put('/me/profile', moduleUser, async (req, res) => {
+router.put('/me/profile', profileUser, async (req, res) => {
   try {
     const departmentId = parseId(req.body?.departmentId);
     const teamId = parseId(req.body?.teamId);
@@ -855,7 +846,7 @@ function readOrgBody(body, o) {
 
 // Express 5 không hỗ trợ regex trong path (/:kind(a|b)) → đăng ký riêng từng loại
 for (const [kind, o] of Object.entries(ORG)) {
-router.get(`/admin/org/${kind}`, moduleAdmin, async (req, res) => {
+router.get(`/admin/org/${kind}`, orgAdmin, async (req, res) => {
   try {
     const pool = await poolPromise;
     const r = await pool.request().query(`
@@ -877,7 +868,7 @@ router.get(`/admin/org/${kind}`, moduleAdmin, async (req, res) => {
   } catch (err) { handleError(res, err, `GET /admin/org/${kind}`); }
 });
 
-router.post(`/admin/org/${kind}`, moduleAdmin, async (req, res) => {
+router.post(`/admin/org/${kind}`, orgAdmin, async (req, res) => {
   try {
     const b = readOrgBody(req.body, o);
     const pool = await poolPromise;
@@ -893,7 +884,7 @@ router.post(`/admin/org/${kind}`, moduleAdmin, async (req, res) => {
   } catch (err) { handleError(res, err, `POST /admin/org/${kind}`); }
 });
 
-router.put(`/admin/org/${kind}/:id`, moduleAdmin, async (req, res) => {
+router.put(`/admin/org/${kind}/:id`, orgAdmin, async (req, res) => {
   try {
     const id = parseId(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: 'Mã không hợp lệ' });
@@ -925,7 +916,7 @@ router.put(`/admin/org/${kind}/:id`, moduleAdmin, async (req, res) => {
 }
 
 // Danh sách nhân viên kèm phòng ban/tổ/chức danh (lọc, tìm, phân trang)
-router.get('/admin/org/users', moduleAdmin, async (req, res) => {
+router.get('/admin/org/users', orgAdmin, async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const pageSize = Math.min(500, Math.max(1, parseInt(req.query.pageSize, 10) || 50));
@@ -965,7 +956,7 @@ router.get('/admin/org/users', moduleAdmin, async (req, res) => {
 });
 
 // Người được gán phòng/tổ theo MSNV nhưng chưa có tài khoản (sql/09)
-router.get('/admin/org/pending', moduleAdmin, async (req, res) => {
+router.get('/admin/org/pending', orgAdmin, async (req, res) => {
   try {
     const pool = await poolPromise;
     const r = await pool.request().query(`
@@ -981,7 +972,7 @@ router.get('/admin/org/pending', moduleAdmin, async (req, res) => {
 
 // Gán hàng loạt: chỉ cập nhật trường được gửi lên (departmentId / teamId / jobTitleId; null = bỏ gán).
 // Gán tổ mà không gửi phòng → phòng lấy theo tổ. Đổi phòng mà tổ cũ không thuộc phòng mới → bỏ tổ.
-router.put('/admin/org/users/profile', moduleAdmin, async (req, res) => {
+router.put('/admin/org/users/profile', orgAdmin, async (req, res) => {
   try {
     const b = req.body || {};
     const userIds = [...new Set((Array.isArray(b.userIds) ? b.userIds : []).map(parseId).filter(Boolean))];

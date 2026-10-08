@@ -125,6 +125,7 @@ app.use('/pageview', require('./pageviewRouter/api'));
 app.use('/api/ink-coverage', require('./InkCoveragePercentOnFilm/api'));
 app.use('/api/ggSheet', require('./GgSheet/api'));
 app.use('/api/fm', require('./FormManagement/api')); // Module 9 — Biểu mẫu nội bộ (bảng fm_*, org_*)
+if (isModuleEnabled(18)) app.use('/api/rq', require('./RequestManagement')); // Module 18 — Quản lý yêu cầu (bảng rq_*)
 
 
 app.get("/users/get", async (req, res) => {
