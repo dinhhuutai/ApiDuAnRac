@@ -5801,6 +5801,8 @@ app.get('/health', (req, res) => res.send('OK'));
 /////////////////////////////////////////////
 
 
-app.listen(port, '0.0.0.0', () => {
+const server = app.listen(port, '0.0.0.0', () => {
   console.log(`🚀 Server đang chạy tại http://localhost:${port}`);
 });
+// Tệp đính kèm module 18 (tối đa RQ_FILE_MAX_MB) đi qua API → cho phép nhận request tới 30 phút (mặc định Node 5 phút)
+server.requestTimeout = 30 * 60 * 1000;

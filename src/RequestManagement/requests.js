@@ -135,13 +135,9 @@ router.get('/me/bootstrap', moduleUser, async (req, res) => {
 
 /* ================================ TỆP ================================ */
 
-// Vé tải lên máy chủ tệp nội bộ (trình duyệt tải thẳng lên, không qua API này)
-router.post('/files/ticket', moduleUser, async (req, res) => {
-  try {
-    if (!F.enabled()) throw httpError(409, 'Chưa cấu hình máy chủ tệp nội bộ — liên hệ IT (xem fileserver/README.md)');
-    ok(req, res, { ...F.clientConfig(), ticket: F.uploadTicket(req.user.userID, 'rq') });
-  } catch (err) { handleError(res, err, 'POST /files/ticket'); }
-});
+// Tải 1 tệp lên: trình duyệt → API này (https) → API server bk (http) lưu vào D:\THLA\QuanLyYeuCau. Nội dung chỉ chảy qua,
+// không lưu trên máy chủ API. Trả { key, name, size, mime, sig } để gắn vào đề xuất/bình luận/tin nhắn.
+router.put('/files/upload', moduleUser, (req, res) => F.proxyUpload(req, res, req.user.userID));
 
 /* ================================ DANH SÁCH ================================ */
 
