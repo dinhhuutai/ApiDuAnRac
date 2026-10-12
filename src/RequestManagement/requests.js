@@ -298,8 +298,11 @@ async function loadDetail(pool, rid, uid, admin) {
     activities: r.recordsets[5].map((a) => ({ ...a, activityId: num(a.activityId) })),
     permissions: {
       approve: myTurn,
+      forward: myTurn, // chuyển lượt duyệt của mình cho người khác
       cancel: isRequester && ['pending', 'returned'].includes(req0.status),
       edit: isRequester && (req0.status === 'returned' || (req0.status === 'pending' && untouched)),
+      // xoá: quản trị viên xoá bất kỳ; người gửi xoá khi chưa ai duyệt hoặc đề xuất đã huỷ / bị từ chối / bị trả lại
+      delete: admin || (isRequester && (['cancelled', 'rejected', 'returned'].includes(req0.status) || (req0.status === 'pending' && untouched))),
       addFollower: options.allowFollowers && (isRequester || isApprover || admin),
       comment: true,
     },
@@ -749,6 +752,133 @@ router.post('/requests/:id/cancel', moduleUser, async (req, res) => {
       title: `${info.requesterName || 'Người gửi'} đã huỷ đề xuất`, body: `${info.typeName}: ${info.title}`, push: false,
     }));
   } catch (err) { handleError(res, err, 'POST /requests/:id/cancel'); }
+});
+
+// Chuyển tiếp: người đang tới lượt giao lượt duyệt của mình cho người khác.
+//   approve = false → "Chuyển tiếp": dòng duyệt của tôi đổi sang người nhận (tôi không còn là người duyệt bước này).
+//   approve = true  → "Duyệt và chuyển tiếp": tôi duyệt, đồng thời thêm người nhận vào CÙNG bước (bước chỉ xong khi họ duyệt).
+// Không đổi cấu trúc bảng: lịch sử ai chuyển cho ai nằm ở rq_Activities (action 'forward').
+router.post('/requests/:id/forward', moduleUser, async (req, res) => {
+  try {
+    const rid = parseId(req.params.id);
+    const target = parseId(req.body?.userId);
+    if (!rid) return res.status(400).json({ success: false, message: 'Mã đề xuất không hợp lệ' });
+    if (!target) throw new D.ValidationError('Chưa chọn người nhận chuyển tiếp');
+    const uid = req.user.userID;
+    if (target === uid) throw new D.ValidationError('Không chuyển tiếp cho chính mình');
+    const approve = req.body?.approve === true;
+    const note = str(req.body?.note, 800) || null;
+    const pool = await poolPromise;
+    const r = await pool.request()
+      .input('rid', sql.Int, rid).input('uid', sql.Int, uid).input('target', sql.Int, target)
+      .input('approve', sql.Bit, approve).input('note', sql.NVarChar(800), note)
+      .query(`
+        SET XACT_ABORT ON;
+        BEGIN TRAN;
+        DECLARE @status NVARCHAR(20), @step INT, @requester INT, @stepName NVARCHAR(150), @mode NVARCHAR(5), @targetName NVARCHAR(200), @tStatus NVARCHAR(10);
+        SELECT @status = status, @step = currentStep, @requester = requesterId
+        FROM dbo.rq_Requests WITH (UPDLOCK, HOLDLOCK) WHERE requestId = @rid AND isDeleted = 0;
+        IF @status IS NULL THROW 50080, N'Không tìm thấy đề xuất', 1;
+        IF @status <> N'pending' THROW 50081, N'Đề xuất không còn ở trạng thái chờ duyệt', 1;
+        SELECT @stepName = stepName, @mode = stepMode FROM dbo.rq_RequestApprovers
+        WHERE requestId = @rid AND stepNo = @step AND userId = @uid AND status = N'pending';
+        IF @mode IS NULL THROW 50082, N'Bạn không phải người duyệt ở bước hiện tại hoặc đã xử lý rồi', 1;
+        IF @target = @requester THROW 50083, N'Không chuyển tiếp cho chính người gửi đề xuất', 1;
+        SELECT @targetName = u.fullName FROM dbo.Users u
+        JOIN dbo.UserModules um ON um.userId = u.userID AND um.moduleId = ${C.MODULE_ID}
+        WHERE u.userID = @target AND u.isDeleted = 0 AND ISNULL(u.isActive, 0) = 1;
+        IF @targetName IS NULL THROW 50084, N'Người nhận không còn hoạt động hoặc chưa dùng module Quản lý đề xuất', 1;
+        SELECT @tStatus = status FROM dbo.rq_RequestApprovers WHERE requestId = @rid AND stepNo = @step AND userId = @target;
+        IF @tStatus IN (N'pending', N'approved') THROW 50085, N'Người này đã là người duyệt ở bước hiện tại', 1;
+
+        IF @approve = 1
+        BEGIN
+          UPDATE dbo.rq_RequestApprovers SET status = N'approved', note = @note, actedAt = SYSDATETIME()
+          WHERE requestId = @rid AND stepNo = @step AND userId = @uid;
+          IF @tStatus IS NULL
+            INSERT INTO dbo.rq_RequestApprovers (requestId, stepNo, stepName, stepMode, userId, status)
+            VALUES (@rid, @step, @stepName, @mode, @target, N'pending');
+          ELSE
+            UPDATE dbo.rq_RequestApprovers SET status = N'pending', note = NULL, actedAt = NULL
+            WHERE requestId = @rid AND stepNo = @step AND userId = @target;
+        END
+        ELSE
+        BEGIN
+          IF @tStatus IS NULL
+            UPDATE dbo.rq_RequestApprovers SET userId = @target WHERE requestId = @rid AND stepNo = @step AND userId = @uid;
+          ELSE
+          BEGIN
+            -- người nhận đã có dòng (đang "bỏ qua") ở bước này → bật lại dòng đó, bỏ dòng của tôi
+            UPDATE dbo.rq_RequestApprovers SET status = N'pending', note = NULL, actedAt = NULL
+            WHERE requestId = @rid AND stepNo = @step AND userId = @target;
+            DELETE FROM dbo.rq_RequestApprovers WHERE requestId = @rid AND stepNo = @step AND userId = @uid;
+          END
+          -- tôi không còn là người duyệt → thêm tôi vào người theo dõi để vẫn xem được kết quả
+          IF NOT EXISTS (SELECT 1 FROM dbo.rq_RequestFollowers WHERE requestId = @rid AND userId = @uid)
+             AND NOT EXISTS (SELECT 1 FROM dbo.rq_RequestApprovers WHERE requestId = @rid AND userId = @uid)
+            INSERT INTO dbo.rq_RequestFollowers (requestId, userId, addedBy) VALUES (@rid, @uid, @uid);
+        END
+
+        UPDATE dbo.rq_Requests SET lastActivityAt = SYSDATETIME(), updatedAt = SYSDATETIME() WHERE requestId = @rid;
+        INSERT INTO dbo.rq_Activities (requestId, userId, action, stepNo, note)
+        VALUES (@rid, @uid, CASE WHEN @approve = 1 THEN N'approve_forward' ELSE N'forward' END, @step,
+                LEFT(CONCAT(N'→ ', @targetName, CASE WHEN @note IS NULL THEN N'' ELSE CONCAT(N': ', @note) END), 1000));
+        COMMIT;
+
+        SELECT r.title, r.typeName, r.requesterId, @targetName AS targetName, @step AS stepNo,
+               (SELECT fullName FROM dbo.Users WHERE userID = @uid) AS actorName
+        FROM dbo.rq_Requests r WHERE r.requestId = @rid;`);
+    const a = r.recordset[0] || {};
+    ok(req, res, { requestId: rid, forwardedTo: target, approved: approve });
+    later(async () => {
+      const actor = a.actorName || 'Người duyệt';
+      const body = `${a.typeName}: ${a.title}${note ? ` — "${note}"` : ''}`;
+      await notify({ userIds: [target], actorId: uid, type: 'approval', requestId: rid, title: `${actor} chuyển tiếp đề xuất cần bạn duyệt`, body });
+      await notify({
+        userIds: [a.requesterId], actorId: uid, type: 'step', requestId: rid, push: false,
+        title: approve ? `${actor} đã duyệt và chuyển tiếp cho ${a.targetName}` : `${actor} chuyển tiếp đề xuất của bạn cho ${a.targetName} duyệt`, body,
+      });
+    });
+  } catch (err) { handleError(res, err, 'POST /requests/:id/forward'); }
+});
+
+// Xoá đề xuất (xoá mềm: isDeleted = 1 — không còn hiện ở đâu, dữ liệu + tệp vẫn còn trong DB/ổ đĩa).
+// Quản trị viên: xoá bất kỳ. Người gửi: khi chưa ai duyệt, hoặc đề xuất đã huỷ / bị từ chối / bị trả lại.
+router.delete('/requests/:id', moduleUser, async (req, res) => {
+  try {
+    const rid = parseId(req.params.id);
+    if (!rid) return res.status(400).json({ success: false, message: 'Mã đề xuất không hợp lệ' });
+    const uid = req.user.userID;
+    const pool = await poolPromise;
+    const r = await pool.request().input('rid', sql.Int, rid).input('uid', sql.Int, uid).input('isAdmin', sql.Bit, isAdmin(req)).query(`
+      SET XACT_ABORT ON;
+      BEGIN TRAN;
+      DECLARE @status NVARCHAR(20), @requester INT;
+      SELECT @status = status, @requester = requesterId FROM dbo.rq_Requests WITH (UPDLOCK, HOLDLOCK) WHERE requestId = @rid AND isDeleted = 0;
+      IF @status IS NULL THROW 50070, N'Không tìm thấy đề xuất', 1;
+      IF @isAdmin = 0
+      BEGIN
+        IF @requester <> @uid THROW 50071, N'Chỉ người gửi hoặc quản trị viên được xoá đề xuất', 1;
+        IF @status = N'approved' THROW 50072, N'Đề xuất đã duyệt xong — chỉ quản trị viên xoá được', 1;
+        IF @status = N'pending' AND EXISTS (SELECT 1 FROM dbo.rq_RequestApprovers WHERE requestId = @rid AND status NOT IN (N'waiting', N'pending'))
+          THROW 50073, N'Đã có người duyệt — hãy huỷ đề xuất trước rồi mới xoá', 1;
+      END
+      DECLARE @n TABLE (userId INT);
+      IF @status = N'pending' INSERT INTO @n SELECT userId FROM dbo.rq_RequestApprovers WHERE requestId = @rid AND status = N'pending';
+      UPDATE dbo.rq_Requests SET isDeleted = 1, updatedAt = SYSDATETIME() WHERE requestId = @rid;
+      UPDATE dbo.rq_Notifications SET isRead = 1 WHERE requestId = @rid AND isRead = 0;
+      INSERT INTO dbo.rq_Activities (requestId, userId, action) VALUES (@rid, @uid, N'delete');
+      COMMIT;
+      SELECT r.title, r.typeName, (SELECT fullName FROM dbo.Users WHERE userID = @uid) AS actorName FROM dbo.rq_Requests r WHERE r.requestId = @rid;
+      SELECT userId FROM @n;`);
+    ok(req, res, { requestId: rid, deleted: true });
+    const info = r.recordsets[0][0] || {};
+    // người đang chờ duyệt được báo (không kèm liên kết — đề xuất không còn mở được)
+    later(() => notify({
+      userIds: r.recordsets[1].map((x) => x.userId), actorId: uid, type: 'deleted', url: '/request', push: false,
+      title: `${info.actorName || 'Người gửi'} đã xoá đề xuất đang chờ bạn duyệt`, body: `${info.typeName}: ${info.title}`,
+    }));
+  } catch (err) { handleError(res, err, 'DELETE /requests/:id'); }
 });
 
 /* ================================ NGƯỜI THEO DÕI ================================ */

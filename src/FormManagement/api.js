@@ -18,7 +18,7 @@ const MODULE_ID = 9;
 router.use(requireAuth);
 const moduleUser = requireModuleRole(MODULE_ID, ['user', 'admin']);
 const moduleAdmin = requireModuleRole(MODULE_ID, ['admin']);
-// Hồ sơ phòng ban/tổ/chức danh và danh mục org_* dùng chung với module 18 "Quản lý yêu cầu"
+// Hồ sơ phòng ban/tổ/chức danh và danh mục org_* dùng chung với module 18 "Quản lý đề xuất"
 const profileUser = requireModuleRole([MODULE_ID, 18], ['user', 'admin']);
 const orgAdmin = requireModuleRole([MODULE_ID, 18], ['admin']);
 

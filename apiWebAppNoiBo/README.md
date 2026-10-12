@@ -1,4 +1,4 @@
-# Lưu tệp module 18 "Quản lý yêu cầu" trên server bk — hướng dẫn cài
+# Lưu tệp module 18 "Quản lý đề xuất" trên server bk — hướng dẫn cài
 
 Thư mục này **không chạy trong NOIBO**. Đây là bản để **chép sang API server bk** (`apiWebAppNoiBo`, cổng 5000, sv-backup 10.84.40.34):
 
@@ -65,7 +65,7 @@ Thư mục API: `D:\THLA\API-canDAcapmuc\apiWebAppNoiBo` (trên sv-backup).
    ```js
    app.use('/api/server/backup/ggSheet', require('./GgSheet/api'));
 
-   // Module 18 "Quản lý yêu cầu" (web NOIBO) — lưu tệp/ảnh vào D:\THLA\QuanLyYeuCau
+   // Module 18 "Quản lý đề xuất" (web NOIBO) — lưu tệp/ảnh vào D:\THLA\QuanLyYeuCau
    app.use('/api/server/backup/quan-ly-yeu-cau', require('./QuanLyYeuCau/api'));
    ```
 4. Cũng trong `src\index.js`, ở **cuối file** sửa dòng
@@ -74,7 +74,7 @@ Thư mục API: `D:\THLA\API-canDAcapmuc\apiWebAppNoiBo` (trên sv-backup).
    ```
    thành
    ```js
-   server.requestTimeout = 1800000; // 30 phút — tệp đính kèm lớn qua mạng chậm (module Quản lý yêu cầu)
+   server.requestTimeout = 1800000; // 30 phút — tệp đính kèm lớn qua mạng chậm (module Quản lý đề xuất)
    ```
    (5 phút có thể không đủ khi nhân viên tải tệp 50 MB bằng 4G yếu. Không ảnh hưởng các API khác.)
 5. Mở `.env`, thêm vào cuối:
@@ -108,7 +108,7 @@ RQ_FILE_SERVER_URL=http://10.84.40.34:5000/api/server/backup/quan-ly-yeu-cau
 RQ_FILE_SECRET=<khoá>
 RQ_FILE_MAX_MB=50
 ```
-Chạy API NOIBO local (`npm run dev`), mở `http://localhost:<PORT>/api/rq/files/health` → phải `"ok":true,"auth":true`. Mở web local → Quản lý yêu cầu → tạo đề xuất có đính kèm ảnh + Excel → xem `D:\THLA\QuanLyYeuCau\HinhAnh\<hôm nay>\` và `TaiLieu\<hôm nay>\` trên sv-backup.
+Chạy API NOIBO local (`npm run dev`), mở `http://localhost:<PORT>/api/rq/files/health` → phải `"ok":true,"auth":true`. Mở web local → Quản lý đề xuất → tạo đề xuất có đính kèm ảnh + Excel → xem `D:\THLA\QuanLyYeuCau\HinhAnh\<hôm nay>\` và `TaiLieu\<hôm nay>\` trên sv-backup.
 
 ### Bước 5 — Máy chủ online (171.237.176.73)
 

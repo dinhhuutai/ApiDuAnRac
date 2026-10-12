@@ -30,7 +30,7 @@ async function pushToUsers(userIds, payload) {
       SELECT endpoint, p256dh, auth FROM dbo.push_subscriptions
       WHERE userID IN (SELECT CAST([value] AS INT) FROM OPENJSON(@ids))`);
     const body = JSON.stringify({
-      title: payload.title || 'Quản lý yêu cầu',
+      title: payload.title || 'Quản lý đề xuất',
       body: payload.body || '',
       url: payload.url || '/request',
       tag: payload.tag || 'rq',

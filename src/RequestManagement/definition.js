@@ -1,9 +1,10 @@
-// RequestManagement/definition.js — Module 18 "Quản lý yêu cầu"
+// RequestManagement/definition.js — Module 18 "Quản lý đề xuất"
 // Loại trường của mẫu đề xuất, chuẩn hoá định nghĩa mẫu (trường + quy trình duyệt + đối tượng),
 // kiểm tra/chuẩn hoá giá trị người gửi nhập, và giải quy trình duyệt ra danh sách người duyệt.
 // Không truy cập DB — để kiểm thử độc lập (tools/rq-unit.js).
 //
-// Frontend có bản mô tả loại trường tương ứng ở pagesRequest/shared/fieldTypes.js — sửa một bên phải sửa cả hai.
+// Frontend có bản mô tả loại trường tương ứng ở pagesRequest/shared/fieldTypes.js — sửa một bên phải sửa cả hai
+// (kể cả phần TỰ TÍNH: cột "= A × B" của bảng, trường "tổng của cột", trường "số tiền bằng chữ").
 
 class ValidationError extends Error {
   constructor(message) {
@@ -12,12 +13,16 @@ class ValidationError extends Error {
   }
 }
 
-const FIELD_TYPES = ['section', 'text', 'textarea', 'number', 'currency', 'date', 'daterange', 'select', 'multiselect', 'checkbox', 'user', 'files'];
+const FIELD_TYPES = ['section', 'text', 'textarea', 'number', 'currency', 'date', 'daterange', 'select', 'multiselect', 'checkbox', 'user', 'files', 'table'];
+// cột của trường bảng: formula = tích 2 cột số (vd Thành tiền = SL × Đơn giá), tự tính
+const COLUMN_TYPES = ['text', 'number', 'currency', 'date', 'formula'];
 const APPROVER_TYPES = ['users', 'dept_head', 'team_head', 'requester_pick'];
 const STEP_MODES = ['all', 'any'];
 const MAX_FIELDS = 60;
 const MAX_STEPS = 10;
 const MAX_OPTIONS = 100;
+const MAX_COLUMNS = 12;
+const MAX_ROWS = 200;
 const KEY_RE = /^[A-Za-z0-9_-]{1,40}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -40,7 +45,91 @@ function newKey(prefix, used) {
   return k;
 }
 
+/* ============================ TỰ TÍNH (có bản sao ở frontend fieldTypes.js) ============================ */
+
+const DIGITS = ['không', 'một', 'hai', 'ba', 'bốn', 'năm', 'sáu', 'bảy', 'tám', 'chín'];
+/** Đọc 1 nhóm 3 chữ số. full = có nhóm lớn hơn đứng trước → đọc đủ "không trăm lẻ …" */
+function readTriple(n, full) {
+  const tr = Math.floor(n / 100), ch = Math.floor((n % 100) / 10), dv = n % 10;
+  const out = [];
+  if (tr > 0 || full) out.push(DIGITS[tr], 'trăm');
+  if (ch === 0) { if (dv > 0 && (tr > 0 || full)) out.push('lẻ'); }
+  else if (ch === 1) out.push('mười');
+  else out.push(DIGITS[ch], 'mươi');
+  if (dv > 0) {
+    if (dv === 1 && ch > 1) out.push('mốt');
+    else if (dv === 5 && ch > 0) out.push('lăm');
+    else out.push(DIGITS[dv]);
+  }
+  return out.join(' ');
+}
+/** 2329544 → "Hai triệu ba trăm hai mươi chín nghìn năm trăm bốn mươi bốn đồng" */
+function moneyToWords(value) {
+  let n = Math.round(Math.abs(Number(value)));
+  if (!Number.isFinite(n) || n > 1e15) return '';
+  const units = ['', 'nghìn', 'triệu', 'tỷ', 'nghìn tỷ', 'triệu tỷ'];
+  const groups = [];
+  do { groups.push(n % 1000); n = Math.floor(n / 1000); } while (n > 0);
+  const parts = [];
+  for (let i = groups.length - 1; i >= 0; i--) {
+    if (groups[i] === 0 && groups.length > 1) continue;
+    parts.push(`${readTriple(groups[i], i < groups.length - 1) || 'không'}${units[i] ? ` ${units[i]}` : ''}`);
+  }
+  const s = `${Number(value) < 0 ? 'âm ' : ''}${parts.join(' ')} đồng`;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const round4 = (n) => Math.round(n * 10000) / 10000;
+const isNumericCol = (c) => !!c && (c.type === 'number' || c.type === 'currency' || c.type === 'formula');
+/** Cột formula là tiền khi 1 trong 2 cột nhân là tiền */
+const isMoneyCol = (cols, c) => c.type === 'currency' || (c.type === 'formula' && (c.of || []).some((k) => cols.find((x) => x.key === k)?.type === 'currency'));
+
+/** Tính các cột "= A × B" của 1 dòng (sửa trực tiếp row) */
+function computeRow(columns, row) {
+  for (const c of columns) {
+    if (c.type !== 'formula') continue;
+    const a = row[c.of?.[0]], b = row[c.of?.[1]];
+    if (isNum(a) && isNum(b)) row[c.key] = isMoneyCol(columns, c) ? Math.round(a * b) : round4(a * b);
+    else delete row[c.key];
+  }
+  return row;
+}
+/** Tổng 1 cột số của bảng (null nếu không dòng nào có số) */
+function columnSum(columns, rows, colKey) {
+  const c = columns.find((x) => x.key === colKey);
+  if (!c) return null;
+  const nums = (rows || []).map((r) => r?.[colKey]).filter(isNum);
+  if (!nums.length) return null;
+  const s = nums.reduce((a, b) => a + b, 0);
+  return isMoneyCol(columns, c) ? Math.round(s) : round4(s);
+}
+
 /* ============================ ĐỊNH NGHĨA MẪU ============================ */
+
+function normalizeColumns(f, label) {
+  const used = new Set();
+  const cols = (Array.isArray(f.columns) ? f.columns : []).slice(0, MAX_COLUMNS).map((c) => {
+    const clabel = str(typeof c === 'string' ? c : c?.label, 150);
+    if (!clabel) return null;
+    let key = str(c?.key, 40);
+    if (!KEY_RE.test(key) || used.has(key)) key = newKey('c', used);
+    else used.add(key);
+    const type = COLUMN_TYPES.includes(c?.type) ? c.type : 'text';
+    const col = { key, label: clabel, type };
+    if (isNumericCol(col) && bool(c.sum)) col.sum = true; // hiện dòng "Tổng cộng" dưới bảng
+    if (type === 'formula') col.of = [str(c?.of?.[0], 40), str(c?.of?.[1], 40)];
+    return col;
+  }).filter(Boolean);
+  if (!cols.length) throw new ValidationError(`Bảng "${label}" chưa có cột`);
+  const plain = new Set(cols.filter((c) => c.type === 'number' || c.type === 'currency').map((c) => c.key));
+  for (const c of cols) {
+    if (c.type === 'formula' && !(plain.has(c.of[0]) && plain.has(c.of[1]))) {
+      throw new ValidationError(`Bảng "${label}", cột "${c.label}": chọn 2 cột số để nhân`);
+    }
+  }
+  return cols;
+}
 
 function normalizeField(f, used) {
   const type = FIELD_TYPES.includes(f?.type) ? f.type : null;
@@ -55,7 +144,7 @@ function normalizeField(f, used) {
   const description = str(f.description, 1000);
   if (description) out.description = description;
   if (type !== 'section') out.required = bool(f.required);
-  out.width = f.width === 'half' && !['textarea', 'section', 'files', 'multiselect'].includes(type) ? 'half' : 'full';
+  out.width = f.width === 'half' && !['textarea', 'section', 'files', 'multiselect', 'table'].includes(type) ? 'half' : 'full';
   const placeholder = str(f.placeholder, 200);
   if (placeholder && ['text', 'textarea', 'number', 'currency'].includes(type)) out.placeholder = placeholder;
 
@@ -85,7 +174,33 @@ function normalizeField(f, used) {
   }
   if (type === 'user') out.multiple = bool(f.multiple);
   if (type === 'files') out.maxFiles = Math.min(20, Math.max(1, Number(f.maxFiles) || 10));
+  if (type === 'table') {
+    out.columns = normalizeColumns(f, label);
+    out.maxRows = Math.min(MAX_ROWS, Math.max(1, Number(f.maxRows) || 50));
+  }
+  // TỰ TÍNH — kiểm tra tham chiếu ở checkComputed() sau khi có đủ danh sách trường
+  if ((type === 'number' || type === 'currency') && f.sumOf && typeof f.sumOf === 'object') {
+    const table = str(f.sumOf.table, 40), column = str(f.sumOf.column, 40);
+    if (table && column) out.sumOf = { table, column }; // = tổng 1 cột của trường bảng
+  }
+  if (type === 'text' && str(f.wordsOf, 40)) out.wordsOf = str(f.wordsOf, 40); // = số tiền (trường khác) đọc bằng chữ
   return out;
+}
+
+/** Trường tự tính phải trỏ tới trường/cột còn tồn tại và đúng loại */
+function checkComputed(fields) {
+  const byKey = new Map(fields.map((f) => [f.key, f]));
+  for (const f of fields) {
+    if (f.sumOf) {
+      const t = byKey.get(f.sumOf.table);
+      const c = t?.type === 'table' ? t.columns.find((x) => x.key === f.sumOf.column) : null;
+      if (!isNumericCol(c)) throw new ValidationError(`Trường "${f.label}": chọn lại cột của bảng để tính tổng`);
+    }
+    if (f.wordsOf) {
+      const s = byKey.get(f.wordsOf);
+      if (!s || (s.type !== 'number' && s.type !== 'currency')) throw new ValidationError(`Trường "${f.label}": chọn lại trường số tiền để đọc bằng chữ`);
+    }
+  }
 }
 
 function normalizeFlow(flow) {
@@ -101,7 +216,7 @@ function normalizeFlow(flow) {
     else used.add(key);
     const userIds = ids(s.userIds, 50);
     if (approverType === 'users' && !userIds.length) throw new ValidationError(`Bước ${i + 1}: chưa chọn người duyệt cụ thể`);
-    return {
+    const out = {
       key,
       name: str(s.name, 150) || `Bước ${i + 1}`,
       approverType,
@@ -109,6 +224,12 @@ function normalizeFlow(flow) {
       userIds: approverType === 'users' || approverType === 'requester_pick' ? userIds : [],
       mode: STEP_MODES.includes(s.mode) ? s.mode : 'all',
     };
+    if (approverType === 'requester_pick') {
+      if (bool(s.optional)) out.optional = true; // người gửi không chọn ai → bỏ qua bước này
+      const maxPick = Number(s.maxPick);
+      if (Number.isInteger(maxPick) && maxPick >= 1 && maxPick <= 20) out.maxPick = maxPick; // vd 1 = chỉ chọn 1 người
+    }
+    return out;
   });
 }
 
@@ -141,6 +262,7 @@ function normalizeType(body) {
   if (rawFields.length > MAX_FIELDS) throw new ValidationError(`Tối đa ${MAX_FIELDS} trường`);
   const used = new Set();
   const fields = rawFields.map((f) => normalizeField(f, used));
+  checkComputed(fields);
   const color = /^#[0-9a-fA-F]{6}$/.test(b.color || '') ? b.color : '#2563eb';
   return {
     name,
@@ -187,12 +309,53 @@ function isEmpty(v) {
  * @param fileCountByField { [fieldKey]: số tệp đính kèm của trường loại 'files' }
  * @returns { values, userIds } — userIds: mọi id người dùng được chọn (để kiểm tra còn hoạt động)
  */
+/** Chuẩn hoá các dòng của trường bảng: bỏ dòng trống, kiểm từng ô, tính cột "= A × B" */
+function buildTableRows(f, v) {
+  const src = Array.isArray(v) ? v : [];
+  const rows = [];
+  for (const [i, raw] of src.entries()) {
+    const r = raw && typeof raw === 'object' ? raw : {};
+    const row = {};
+    const at = (c) => `Bảng "${f.label}", dòng ${i + 1}, cột "${c.label}"`;
+    for (const c of f.columns) {
+      if (c.type === 'formula') continue;
+      let x = r[c.key];
+      if (typeof x === 'string') x = x.trim();
+      if (x === undefined || x === null || x === '') continue;
+      if (c.type === 'text') row[c.key] = String(x).slice(0, 1000);
+      else if (c.type === 'number') {
+        const n = Number(String(x).replace(/\s/g, '').replace(',', '.'));
+        if (!Number.isFinite(n) || Math.abs(n) > 1e15) throw new ValidationError(`${at(c)}: phải là số`);
+        row[c.key] = n;
+      } else if (c.type === 'currency') {
+        const n = Math.round(Number(typeof x === 'number' ? x : String(x).replace(/[^\d-]/g, '')));
+        if (!Number.isFinite(n) || Math.abs(n) > 1e15) throw new ValidationError(`${at(c)}: số tiền không hợp lệ`);
+        row[c.key] = n;
+      } else if (c.type === 'date') {
+        if (!isValidDate(x)) throw new ValidationError(`${at(c)}: ngày không hợp lệ`);
+        row[c.key] = x;
+      }
+    }
+    if (!Object.keys(row).length) continue; // dòng trống
+    rows.push(computeRow(f.columns, row));
+  }
+  if (rows.length > (f.maxRows || 50)) throw new ValidationError(`Bảng "${f.label}" tối đa ${f.maxRows || 50} dòng`);
+  return rows;
+}
+
 function buildValues(fields, input, fileCountByField = {}) {
   const src = input && typeof input === 'object' ? input : {};
   const values = {};
   const userIds = new Set();
   for (const f of fields) {
     if (f.type === 'section') continue;
+    if (f.sumOf || f.wordsOf) continue; // tự tính — xem cuối hàm (không nhận giá trị người dùng gửi)
+    if (f.type === 'table') {
+      const rows = buildTableRows(f, src[f.key]);
+      if (f.required && !rows.length) throw new ValidationError(`Bảng "${f.label}" cần ít nhất 1 dòng`);
+      if (rows.length) values[f.key] = rows;
+      continue;
+    }
     if (f.type === 'files') {
       const n = Number(fileCountByField[f.key] || 0);
       if (f.required && n === 0) throw new ValidationError(`Trường "${f.label}" cần ít nhất 1 tệp`);
@@ -275,6 +438,26 @@ function buildValues(fields, input, fileCountByField = {}) {
         break;
     }
   }
+  // TỰ TÍNH: tổng 1 cột của bảng → rồi mới tới "bằng chữ" (có thể đọc chính trường tổng)
+  for (const f of fields) {
+    if (!f.sumOf) continue;
+    const t = fields.find((x) => x.key === f.sumOf.table && x.type === 'table');
+    const s = t ? columnSum(t.columns, values[t.key], f.sumOf.column) : null;
+    if (s === null) {
+      if (f.required) throw new ValidationError(`Trường "${f.label}": bảng "${t?.label || ''}" chưa có số liệu để tính tổng`);
+      continue;
+    }
+    values[f.key] = f.type === 'currency' ? Math.round(s) : s;
+  }
+  for (const f of fields) {
+    if (!f.wordsOf) continue;
+    const n = values[f.wordsOf];
+    if (!isNum(n)) {
+      if (f.required) throw new ValidationError(`Trường "${f.label}": chưa có số tiền để đọc bằng chữ`);
+      continue;
+    }
+    values[f.key] = moneyToWords(n);
+  }
   return { values, userIds: [...userIds] };
 }
 
@@ -304,7 +487,11 @@ function resolveFlow(flow, ctx) {
     } else if (s.approverType === 'requester_pick') {
       candidates = ids(ctx.picked?.[s.key], 20);
       if (s.userIds.length) candidates = candidates.filter((id) => s.userIds.includes(id));
-      if (!candidates.length) throw new ValidationError(`Bước "${s.name}": vui lòng chọn người duyệt`);
+      if (s.maxPick) candidates = candidates.slice(0, s.maxPick);
+      if (!candidates.length) {
+        if (s.optional) continue; // bước không bắt buộc, người gửi không chọn ai → bỏ qua
+        throw new ValidationError(`Bước "${s.name}": vui lòng chọn người duyệt`);
+      }
     }
     let users = [...new Set(candidates)].filter((id) => ctx.activeIds.has(id));
     const hadRequester = users.includes(ctx.requesterId);
@@ -343,4 +530,6 @@ module.exports = {
   parseJson,
   isValidDate,
   ids,
+  moneyToWords,
+  columnSum,
 };

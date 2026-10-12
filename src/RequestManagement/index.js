@@ -1,4 +1,4 @@
-// RequestManagement — Module 18 "Quản lý yêu cầu" (đề xuất / duyệt nhiều cấp / bình luận / chat)
+// RequestManagement — Module 18 "Quản lý đề xuất" (đề xuất / duyệt nhiều cấp / bình luận / chat)
 // Mount: app.use('/api/rq', require('./RequestManagement'))
 // Bảng rq_* (sql/10), dùng chung org_* (phòng ban, tổ). Tệp/ảnh lưu ở server bk (D:\THLA\QuanLyYeuCau,
 // qua API apiWebAppNoiBo cổng 5000) — API này chuyển tiếp nội dung (files.js), DB chỉ lưu thông tin tệp.

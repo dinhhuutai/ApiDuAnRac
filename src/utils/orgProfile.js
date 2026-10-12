@@ -1,5 +1,5 @@
 // utils/orgProfile.js — hồ sơ phòng ban / tổ / chức danh hiệu lực (bảng org_*, sql/06 + sql/09).
-// Dùng chung cho module 9 (Biểu mẫu) và 18 (Quản lý yêu cầu).
+// Dùng chung cho module 9 (Biểu mẫu) và 18 (Quản lý đề xuất).
 //
 // Hồ sơ hiệu lực: org_UserProfiles, nếu user chưa có hồ sơ thì lấy org_PendingProfiles theo MSNV
 // (người được gán trước khi có tài khoản). Ghi luôn vào org_UserProfiles.

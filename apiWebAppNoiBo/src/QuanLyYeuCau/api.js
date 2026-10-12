@@ -1,4 +1,4 @@
-// QuanLyYeuCau — lưu tệp / hình ảnh đính kèm của module 18 "Quản lý yêu cầu" (web NOIBO)
+// QuanLyYeuCau — lưu tệp / hình ảnh đính kèm của module 18 "Quản lý đề xuất" (web NOIBO)
 // ---------------------------------------------------------------------------------------------
 // Chép file này vào API server bk:  apiWebAppNoiBo\src\QuanLyYeuCau\api.js
 // Gắn trong src\index.js (cạnh các dòng app.use khác):
