@@ -6,6 +6,7 @@ const C = require('./common');
 const D = require('./definition');
 const F = require('./files');
 const { notify, later } = require('./notify');
+const { countVisible: countReports } = require('./reports');
 
 const router = express.Router();
 const { moduleUser, dt, parseId, handleError, httpError, ok, canViewExpr, isAdmin, getProfile, activeUserIds, profileApply } = C;
@@ -100,13 +101,14 @@ router.get('/me/bootstrap', moduleUser, async (req, res) => {
   try {
     const pool = await poolPromise;
     const uid = req.user.userID;
-    const [profile, r, counts] = await Promise.all([
+    const [profile, r, counts, reportCount] = await Promise.all([
       getProfile(pool, uid),
       pool.request().input('uid', sql.Int, uid).query(`
         SELECT groupId, name, color, sortOrder FROM dbo.rq_Groups WHERE isActive = 1 ORDER BY sortOrder, name;
         SELECT typeId, groupId, name, description, icon, color, fields, flow, audience, defaultFollowers, options, sortOrder
         FROM dbo.rq_Types WHERE isDeleted = 0 AND isActive = 1 ORDER BY sortOrder, name;`),
       pulse(pool, uid),
+      countReports(pool, uid, isAdmin(req)),
     ]);
     const heads = await pool.request()
       .input('dept', sql.Int, profile?.departmentId || null)
@@ -127,6 +129,8 @@ router.get('/me/bootstrap', moduleUser, async (req, res) => {
       groups: r.recordsets[0],
       types,
       counts,
+      reportCount, // số báo cáo được xem → hiện mục "Báo cáo" ở menu trái
+
       files: F.clientConfig(),
       pushPublicKey: process.env.VAPID_PUBLIC_KEY || null,
     });
@@ -256,7 +260,8 @@ async function loadDetail(pool, rid, uid, admin) {
       FROM dbo.rq_RequestApprovers a JOIN dbo.Users u ON u.userID = a.userId
       WHERE @ok = 1 AND a.requestId = @rid ORDER BY a.stepNo, a.id;
 
-      SELECT f.userId, u.fullName, f.addedBy, ${dt('f.createdAt', 'createdAt')}
+      SELECT f.userId, u.fullName, f.addedBy, CAST(CASE WHEN f.addedBy IS NULL THEN 1 ELSE 0 END AS bit) AS isFixed,
+             ${dt('f.createdAt', 'createdAt')}
       FROM dbo.rq_RequestFollowers f JOIN dbo.Users u ON u.userID = f.userId
       WHERE @ok = 1 AND f.requestId = @rid ORDER BY f.createdAt;
 
@@ -284,6 +289,8 @@ async function loadDetail(pool, rid, uid, admin) {
   const isApprover = approvers.some((a) => a.userId === uid);
   const myTurn = req0.status === 'pending' && approvers.some((a) => a.userId === uid && a.status === 'pending');
   const untouched = approvers.every((a) => a.status === 'waiting' || a.status === 'pending');
+  // đã có người duyệt (hoặc đã duyệt xong) → KHÔNG ai xoá được, kể cả quản trị viên (chỉ huỷ khi còn chờ)
+  const approvedOnce = req0.status === 'approved' || approvers.some((a) => a.status === 'approved');
 
   return {
     ...base,
@@ -301,8 +308,10 @@ async function loadDetail(pool, rid, uid, admin) {
       forward: myTurn, // chuyển lượt duyệt của mình cho người khác
       cancel: isRequester && ['pending', 'returned'].includes(req0.status),
       edit: isRequester && (req0.status === 'returned' || (req0.status === 'pending' && untouched)),
-      // xoá: quản trị viên xoá bất kỳ; người gửi xoá khi chưa ai duyệt hoặc đề xuất đã huỷ / bị từ chối / bị trả lại
-      delete: admin || (isRequester && (['cancelled', 'rejected', 'returned'].includes(req0.status) || (req0.status === 'pending' && untouched))),
+      // xoá: chỉ khi CHƯA AI DUYỆT. Quản trị viên: mọi đề xuất chưa duyệt; người gửi: khi chưa ai xử lý
+      // hoặc đề xuất đã huỷ / bị từ chối / bị trả lại (mà chưa bước nào duyệt)
+      delete: !approvedOnce && (admin || (isRequester && (['cancelled', 'rejected', 'returned'].includes(req0.status) || (req0.status === 'pending' && untouched)))),
+      deleteBlocked: approvedOnce && (admin || isRequester), // để giao diện giải thích vì sao không có nút Xoá
       addFollower: options.allowFollowers && (isRequester || isApprover || admin),
       comment: true,
     },
@@ -413,8 +422,11 @@ router.post('/requests', moduleUser, async (req, res) => {
       stepNo: s.stepNo, stepName: s.name, stepMode: s.mode, userId, status: s.stepNo === 1 ? 'pending' : 'waiting',
     })));
     const approverSet = new Set(approverRows.map((a) => a.userId));
+    // người theo dõi CỐ ĐỊNH theo mẫu: lưu addedBy = NULL → người gửi không bỏ được (chỉ quản trị viên)
+    const fixedSet = new Set(defaultFollowers);
     const followers = [...new Set([...defaultFollowers, ...extraFollowers])]
       .filter((id) => active.has(id) && id !== uid && !approverSet.has(id));
+    const followerRows = followers.map((id) => ({ id, fixed: fixedSet.has(id) }));
     const status = steps.length ? 'pending' : 'approved';
     const note = skipped.length ? `Bỏ qua bước: ${skipped.join(', ')} (người gửi là người duyệt)` : null;
 
@@ -439,7 +451,7 @@ router.post('/requests', moduleUser, async (req, res) => {
       .input('deadline', sql.VarChar(10), deadline)
       .input('stepCount', sql.Int, steps.length)
       .input('approvers', sql.NVarChar(sql.MAX), JSON.stringify(approverRows))
-      .input('followers', sql.NVarChar(sql.MAX), JSON.stringify(followers))
+      .input('followers', sql.NVarChar(sql.MAX), JSON.stringify(followerRows))
       .input('files', sql.NVarChar(sql.MAX), JSON.stringify(files))
       .input('fileCount', sql.Int, files.length)
       .input('note', sql.NVarChar(1000), note)
@@ -460,7 +472,8 @@ router.post('/requests', moduleUser, async (req, res) => {
         SELECT @rid, j.stepNo, j.stepName, j.stepMode, j.userId, j.status FROM ${APPROVER_JSON};
 
         INSERT INTO dbo.rq_RequestFollowers (requestId, userId, addedBy)
-        SELECT @rid, CAST([value] AS INT), @uid FROM OPENJSON(@followers);
+        SELECT @rid, j.id, CASE WHEN j.fixed = 1 THEN NULL ELSE @uid END
+        FROM OPENJSON(@followers) WITH (id INT '$.id', fixed BIT '$.fixed') j;
 
         INSERT INTO dbo.rq_Files (storageKey, fileName, mimeType, sizeBytes, hasThumb, width, height,
           ownerType, ownerId, requestId, fieldKey, uploadedBy)
@@ -843,7 +856,8 @@ router.post('/requests/:id/forward', moduleUser, async (req, res) => {
 });
 
 // Xoá đề xuất (xoá mềm: isDeleted = 1 — không còn hiện ở đâu, dữ liệu + tệp vẫn còn trong DB/ổ đĩa).
-// Quản trị viên: xoá bất kỳ. Người gửi: khi chưa ai duyệt, hoặc đề xuất đã huỷ / bị từ chối / bị trả lại.
+// Đã có người duyệt (1 bước bất kỳ) hoặc đã duyệt xong → KHÔNG ai xoá được, kể cả quản trị viên.
+// Còn lại — quản trị viên: xoá bất kỳ. Người gửi: khi chưa ai xử lý, hoặc đề xuất đã huỷ / bị từ chối / bị trả lại.
 router.delete('/requests/:id', moduleUser, async (req, res) => {
   try {
     const rid = parseId(req.params.id);
@@ -856,10 +870,11 @@ router.delete('/requests/:id', moduleUser, async (req, res) => {
       DECLARE @status NVARCHAR(20), @requester INT;
       SELECT @status = status, @requester = requesterId FROM dbo.rq_Requests WITH (UPDLOCK, HOLDLOCK) WHERE requestId = @rid AND isDeleted = 0;
       IF @status IS NULL THROW 50070, N'Không tìm thấy đề xuất', 1;
+      IF @status = N'approved' OR EXISTS (SELECT 1 FROM dbo.rq_RequestApprovers WHERE requestId = @rid AND status = N'approved')
+        THROW 50072, N'Đề xuất đã được duyệt — không xoá được', 1;
       IF @isAdmin = 0
       BEGIN
         IF @requester <> @uid THROW 50071, N'Chỉ người gửi hoặc quản trị viên được xoá đề xuất', 1;
-        IF @status = N'approved' THROW 50072, N'Đề xuất đã duyệt xong — chỉ quản trị viên xoá được', 1;
         IF @status = N'pending' AND EXISTS (SELECT 1 FROM dbo.rq_RequestApprovers WHERE requestId = @rid AND status NOT IN (N'waiting', N'pending'))
           THROW 50073, N'Đã có người duyệt — hãy huỷ đề xuất trước rồi mới xoá', 1;
       END
@@ -937,8 +952,12 @@ router.delete('/requests/:id/followers/:userId', moduleUser, async (req, res) =>
     const pool = await poolPromise;
     const acc = await loadAccess(pool, rid, uid, isAdmin(req));
     if (!(target === uid || acc.requesterId === uid || isAdmin(req))) throw httpError(403, 'Bạn không bỏ được người theo dõi này');
-    await pool.request().input('rid', sql.Int, rid).input('target', sql.Int, target)
-      .query(`DELETE FROM dbo.rq_RequestFollowers WHERE requestId = @rid AND userId = @target`);
+    // người theo dõi cố định theo mẫu (addedBy NULL): chỉ quản trị viên bỏ được
+    await pool.request().input('rid', sql.Int, rid).input('target', sql.Int, target).input('isAdmin', sql.Bit, isAdmin(req))
+      .query(`
+        IF @isAdmin = 0 AND EXISTS (SELECT 1 FROM dbo.rq_RequestFollowers WHERE requestId = @rid AND userId = @target AND addedBy IS NULL)
+          THROW 50090, N'Người theo dõi cố định theo mẫu đề xuất — chỉ quản trị viên bỏ được', 1;
+        DELETE FROM dbo.rq_RequestFollowers WHERE requestId = @rid AND userId = @target;`);
     ok(req, res, { removed: target });
   } catch (err) { handleError(res, err, 'DELETE /requests/:id/followers/:userId'); }
 });

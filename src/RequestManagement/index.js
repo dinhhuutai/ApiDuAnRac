@@ -8,6 +8,7 @@
 //   /api/rq/me/*, /directory, /requests*, /comments/*, /notifications*, /files/upload  → requests.js
 //   /api/rq/chat/*                                                                      → chat.js
 //   /api/rq/admin/*  (admin module 18)                                                  → admin.js
+//   /api/rq/reports* (xem: người được chia sẻ + admin · thiết kế: admin)                → reports.js
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const F = require('./files');
@@ -28,6 +29,7 @@ router.get('/files/health', async (req, res) => {
 router.use(requireAuth);
 router.use('/chat', require('./chat'));
 router.use('/admin', require('./admin'));
+router.use('/reports', require('./reports'));
 router.use('/', require('./requests'));
 
 module.exports = router;
