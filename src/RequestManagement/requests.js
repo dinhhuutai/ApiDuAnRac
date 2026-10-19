@@ -282,7 +282,11 @@ async function loadDetail(pool, rid, uid, admin) {
   const followers = r.recordsets[2];
   const files = r.recordsets[3];
   const filesByComment = groupCommentFiles(files);
-  const options = D.normalizeOptions(D.parseJson(req0.typeOptions, {}));
+  const rawOptions = D.parseJson(req0.typeOptions, {});
+  const options = D.normalizeOptions(rawOptions);
+  // mẫu in của mẫu đề xuất (hiện tại): chỉ tên + khổ — nội dung lấy ở GET /requests/:id/print khi bấm In
+  const prints = (Array.isArray(rawOptions.printTemplates) ? rawOptions.printTemplates : [])
+    .map((p) => ({ id: p.id, name: p.name, paper: p.paper, orientation: p.orientation, isDefault: !!p.isDefault }));
   const { typeOptions, fields, fieldValues, flow, ...base } = req0;
 
   const isRequester = req0.requesterId === uid;
@@ -298,6 +302,7 @@ async function loadDetail(pool, rid, uid, admin) {
     values: D.parseJson(fieldValues, {}),
     flow: D.parseJson(flow, []),
     options,
+    prints,
     approvers,
     followers,
     files: files.filter((f) => f.ownerType === 'request').map(F.fileOut),
@@ -894,6 +899,20 @@ router.delete('/requests/:id', moduleUser, async (req, res) => {
       title: `${info.actorName || 'Người gửi'} đã xoá đề xuất đang chờ bạn duyệt`, body: `${info.typeName}: ${info.title}`,
     }));
   } catch (err) { handleError(res, err, 'DELETE /requests/:id'); }
+});
+
+/* ================================ IN ĐỀ XUẤT ================================ */
+
+// Mẫu in (đầy đủ khối) của mẫu đề xuất — ai xem được đề xuất thì in được. Trình duyệt tự dựng trang in từ
+// mẫu + dữ liệu chi tiết đã tải (pagesRequest/shared/print.js), không tạo tệp ở máy chủ.
+router.get('/requests/:id/print', moduleUser, async (req, res) => {
+  try {
+    const rid = parseId(req.params.id);
+    if (!rid) return res.status(400).json({ success: false, message: 'Mã đề xuất không hợp lệ' });
+    const acc = await loadAccess(await poolPromise, rid, req.user.userID, isAdmin(req));
+    const templates = D.normalizePrintTemplates(D.parseJson(acc.options, {})?.printTemplates);
+    ok(req, res, { templates });
+  } catch (err) { handleError(res, err, 'GET /requests/:id/print'); }
 });
 
 /* ================================ NGƯỜI THEO DÕI ================================ */

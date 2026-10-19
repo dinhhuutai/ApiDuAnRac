@@ -253,6 +253,48 @@ function normalizeOptions(o = {}) {
   };
 }
 
+/* ============================ MẪU IN (rq_Types.options.printTemplates) ============================ */
+// Mỗi mẫu đề xuất có tối đa 10 mẫu in: khổ giấy A4/A5, hướng, lề, phông + danh sách KHỐI (tiêu đề, văn bản, bảng tự do,
+// danh sách trường, bảng chi tiết, ký duyệt, khoảng trống, đường kẻ, ngắt trang). Chữ trong khối có biến ${...} lấy dữ liệu
+// đề xuất. Frontend (pagesRequest/shared/print.js) dựng HTML in và TỰ LÀM SẠCH mọi giá trị lúc dựng (escape chữ, kiểm màu/số)
+// → ở đây chỉ kiểm khung + giới hạn kích thước. Không nằm trong normalizeOptions → bootstrap / chi tiết không chở theo.
+const PAPERS = ['A4', 'A5'];
+const PRINT_FONTS = ['Times New Roman', 'Arial', 'Calibri', 'Tahoma'];
+const BLOCK_TYPES = ['heading', 'text', 'grid', 'fields', 'items', 'signatures', 'spacer', 'divider', 'pagebreak'];
+const MAX_TEMPLATES = 10;
+const MAX_BLOCKS = 150;
+const MAX_PRINT_JSON = 400000;
+const clampNum = (v, min, max, dflt) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt;
+};
+
+function normalizePrintTemplates(list) {
+  const used = new Set();
+  const out = (Array.isArray(list) ? list : []).slice(0, MAX_TEMPLATES).map((t, i) => {
+    let id = str(t?.id, 40);
+    if (!KEY_RE.test(id) || used.has(id)) id = newKey('p', used);
+    else used.add(id);
+    const m = t?.margins || {};
+    return {
+      id,
+      name: str(t?.name, 150) || `Mẫu in ${i + 1}`,
+      paper: PAPERS.includes(t?.paper) ? t.paper : 'A4',
+      orientation: t?.orientation === 'landscape' ? 'landscape' : 'portrait',
+      margins: { top: clampNum(m.top, 0, 50, 15), right: clampNum(m.right, 0, 50, 12), bottom: clampNum(m.bottom, 0, 50, 15), left: clampNum(m.left, 0, 50, 15) },
+      font: PRINT_FONTS.includes(t?.font) ? t.font : 'Times New Roman',
+      fontSize: clampNum(t?.fontSize, 7, 20, 12),
+      isDefault: bool(t?.isDefault),
+      blocks: (Array.isArray(t?.blocks) ? t.blocks : []).filter((b) => b && typeof b === 'object' && BLOCK_TYPES.includes(b.type)).slice(0, MAX_BLOCKS),
+    };
+  });
+  if (out.length && !out.some((x) => x.isDefault)) out[0].isDefault = true;
+  let seenDefault = false;
+  for (const x of out) { if (x.isDefault && seenDefault) x.isDefault = false; if (x.isDefault) seenDefault = true; }
+  if (JSON.stringify(out).length > MAX_PRINT_JSON) throw new ValidationError('Mẫu in quá lớn — bớt khối / bớt chữ rồi lưu lại');
+  return out;
+}
+
 /** Chuẩn hoá toàn bộ mẫu đề xuất (admin gửi lên) */
 function normalizeType(body) {
   const b = body || {};
@@ -274,7 +316,7 @@ function normalizeType(body) {
     flow: normalizeFlow(b.flow),
     audience: normalizeAudience(b.audience),
     defaultFollowers: ids(b.defaultFollowers, 50),
-    options: normalizeOptions(b.options),
+    options: { ...normalizeOptions(b.options), printTemplates: normalizePrintTemplates(b.options?.printTemplates) },
     sortOrder: Number.isInteger(Number(b.sortOrder)) ? Number(b.sortOrder) : 0,
     isActive: bool(b.isActive, true),
   };
@@ -523,6 +565,7 @@ module.exports = {
   normalizeFlow,
   normalizeAudience,
   normalizeOptions,
+  normalizePrintTemplates,
   audienceAllows,
   buildValues,
   resolveFlow,

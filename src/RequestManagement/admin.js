@@ -94,13 +94,15 @@ async function loadType(pool, id) {
     FROM dbo.rq_Types t WHERE typeId = @id AND isDeleted = 0`);
   const t = r.recordset[0];
   if (!t) return null;
+  const opt = D.parseJson(t.options, {});
   return {
     ...t,
     fields: D.parseJson(t.fields, []),
     flow: D.parseJson(t.flow, []),
     audience: D.parseJson(t.audience, { type: 'all' }),
     defaultFollowers: D.parseJson(t.defaultFollowers, []),
-    options: D.normalizeOptions(D.parseJson(t.options, {})),
+    // mẫu in chỉ có ở đây (trang thiết kế) — bootstrap / chi tiết đề xuất không chở theo
+    options: { ...D.normalizeOptions(opt), printTemplates: D.normalizePrintTemplates(opt.printTemplates) },
   };
 }
 
