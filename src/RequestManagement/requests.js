@@ -286,7 +286,7 @@ async function loadDetail(pool, rid, uid, admin) {
   const options = D.normalizeOptions(rawOptions);
   // mẫu in của mẫu đề xuất (hiện tại): chỉ tên + khổ — nội dung lấy ở GET /requests/:id/print khi bấm In
   const prints = (Array.isArray(rawOptions.printTemplates) ? rawOptions.printTemplates : [])
-    .map((p) => ({ id: p.id, name: p.name, paper: p.paper, orientation: p.orientation, isDefault: !!p.isDefault }));
+    .map((p) => ({ id: p.id, name: p.name, kind: p.kind || 'design', paper: p.paper, orientation: p.orientation, isDefault: !!p.isDefault }));
   const { typeOptions, fields, fieldValues, flow, ...base } = req0;
 
   const isRequester = req0.requesterId === uid;
@@ -910,7 +910,7 @@ router.get('/requests/:id/print', moduleUser, async (req, res) => {
     const rid = parseId(req.params.id);
     if (!rid) return res.status(400).json({ success: false, message: 'Mã đề xuất không hợp lệ' });
     const acc = await loadAccess(await poolPromise, rid, req.user.userID, isAdmin(req));
-    const templates = D.normalizePrintTemplates(D.parseJson(acc.options, {})?.printTemplates);
+    const templates = F.withPrintFileUrls(D.normalizePrintTemplates(D.parseJson(acc.options, {})?.printTemplates));
     ok(req, res, { templates });
   } catch (err) { handleError(res, err, 'GET /requests/:id/print'); }
 });

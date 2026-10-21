@@ -5,6 +5,7 @@ const express = require('express');
 const { sql, poolPromise } = require('../db');
 const C = require('./common');
 const D = require('./definition');
+const F = require('./files');
 const { clearDirectoryCache } = require('./requests');
 
 const router = express.Router();
@@ -102,7 +103,7 @@ async function loadType(pool, id) {
     audience: D.parseJson(t.audience, { type: 'all' }),
     defaultFollowers: D.parseJson(t.defaultFollowers, []),
     // mẫu in chỉ có ở đây (trang thiết kế) — bootstrap / chi tiết đề xuất không chở theo
-    options: { ...D.normalizeOptions(opt), printTemplates: D.normalizePrintTemplates(opt.printTemplates) },
+    options: { ...D.normalizeOptions(opt), printTemplates: F.withPrintFileUrls(D.normalizePrintTemplates(opt.printTemplates)) },
   };
 }
 
@@ -116,7 +117,28 @@ router.get('/types/:id', async (req, res) => {
   } catch (err) { handleError(res, err, 'GET /admin/types/:id'); }
 });
 
+/**
+ * Mẫu in Word: tệp phải do CHÍNH người lưu vừa tải lên (chữ ký tải lên) hoặc đã có trong 1 mẫu đề xuất
+ * (lưu lại / nhân bản mẫu) — không cho trỏ tới tệp đính kèm bất kỳ của người khác. Bỏ chữ ký trước khi lưu.
+ */
+async function checkPrintFiles(pool, def, uid) {
+  for (const t of def.options.printTemplates || []) {
+    if (t.kind !== 'docx') continue;
+    if (!F.KEY_RE.test(t.file.key)) throw new D.ValidationError(`Mẫu in "${t.name}": tệp Word không hợp lệ — tải lại tệp`);
+    let okFile = !!t.file.sig && F.verifyUpload({ key: t.file.key, size: t.file.size, sig: t.file.sig }, uid);
+    if (!okFile) {
+      const pattern = `%${JSON.stringify(t.file.key).replace(/[[%_]/g, (c) => `[${c}]`)}%`;
+      const r = await pool.request().input('p', sql.NVarChar(600), pattern)
+        .query(`SELECT TOP 1 1 AS found FROM dbo.rq_Types WHERE options LIKE @p`);
+      okFile = !!r.recordset[0];
+    }
+    if (!okFile) throw new D.ValidationError(`Mẫu in "${t.name}": tệp Word chưa được tải lên hợp lệ — tải lại tệp`);
+    delete t.file.sig;
+  }
+}
+
 async function saveType(pool, id, def, uid) {
+  await checkPrintFiles(pool, def, uid);
   // người duyệt / theo dõi cố định phải còn hoạt động
   const userIds = [...def.flow.flatMap((s) => s.userIds), ...def.defaultFollowers];
   const active = await activeUserIds(pool, userIds);
@@ -313,3 +335,4 @@ router.get('/stats', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.saveType = saveType; // imports.js: tạo mẫu mới khi nhập dữ liệu từ Base

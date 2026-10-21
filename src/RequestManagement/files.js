@@ -350,7 +350,14 @@ function checkServer() {
   });
 }
 
+/** Mẫu in loại Word: gắn đường dẫn đã ký (xem + tải về) để trình duyệt lấy tệp mẫu */
+function withPrintFileUrls(templates) {
+  return (templates || []).map((t) => (t.kind === 'docx' && t.file?.key
+    ? { ...t, file: { ...t.file, url: fileUrl(t.file.key), downloadUrl: fileUrl(t.file.key, { download: true, name: t.file.name }) } }
+    : t));
+}
+
 module.exports = {
   enabled, verifyUpload, uploadSig, fileUrl, verifyView, fileOut, readAttachments, clientConfig,
-  proxyUpload, proxyView, checkServer, KEY_RE, hmac,
+  proxyUpload, proxyView, checkServer, withPrintFileUrls, KEY_RE, hmac,
 };

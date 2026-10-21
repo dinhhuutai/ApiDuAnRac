@@ -269,12 +269,30 @@ const clampNum = (v, min, max, dflt) => {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt;
 };
 
+// Mẫu in loại "docx" (2026-10-19): tệp Word mẫu do admin tải lên (lưu ở server bk như tệp đính kèm) + bảng khớp biến chọn tay
+// map { "<tên biến trong tệp>": "<biến hệ thống>" | "col:<bảng>:<cột|#>" }. Tệp phải đúng do người lưu tải lên — admin.js kiểm chữ ký.
+const MAP_KEY_RE = /^[^{}|\s]{1,120}$/;
+const MAP_VAL_RE = /^[A-Za-z0-9_:#.-]{1,160}$/;
+function normalizeDocxTemplate(t, id, i) {
+  const f = t?.file || {};
+  const key = str(f.key, 200);
+  if (!key || !/\.docx$/i.test(key)) throw new ValidationError(`Mẫu in "${str(t?.name, 150) || i + 1}": chưa tải lên tệp Word .docx`);
+  const map = {};
+  for (const [k, v] of Object.entries(t?.map && typeof t.map === 'object' ? t.map : {}).slice(0, 400)) {
+    if (MAP_KEY_RE.test(k) && typeof v === 'string' && MAP_VAL_RE.test(v)) map[k] = v;
+  }
+  const file = { key, name: str(f.name, 255) || key.split('/').pop(), size: Math.max(0, Number(f.size) || 0) };
+  if (f.sig) file.sig = str(f.sig, 200); // chỉ để admin.js kiểm, không lưu
+  return { id, name: str(t?.name, 150) || `Mẫu in ${i + 1}`, kind: 'docx', isDefault: bool(t?.isDefault), file, map };
+}
+
 function normalizePrintTemplates(list) {
   const used = new Set();
   const out = (Array.isArray(list) ? list : []).slice(0, MAX_TEMPLATES).map((t, i) => {
     let id = str(t?.id, 40);
     if (!KEY_RE.test(id) || used.has(id)) id = newKey('p', used);
     else used.add(id);
+    if (t?.kind === 'docx') return normalizeDocxTemplate(t, id, i);
     const m = t?.margins || {};
     return {
       id,
